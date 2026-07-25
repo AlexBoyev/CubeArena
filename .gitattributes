@@ -1,0 +1,68 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Unity source/text files — normalize to LF in the repo, checked out as
+# native line endings (CRLF on Windows) so this stops the warning spam
+*.cs text diff=csharp
+*.cginc text
+*.shader text
+*.json text
+*.xml text
+*.txt text
+*.md text
+*.asmdef text
+*.asmref text
+
+# Unity YAML-based assets — treat as text so merges/diffs work,
+# but Unity's own YAML merge tool (via UnityYAMLMerge) handles conflicts better
+*.unity text merge=unityyamlmerge eol=lf
+*.prefab text merge=unityyamlmerge eol=lf
+*.asset text merge=unityyamlmerge eol=lf
+*.meta text merge=unityyamlmerge eol=lf
+*.mat text merge=unityyamlmerge eol=lf
+*.anim text merge=unityyamlmerge eol=lf
+*.controller text merge=unityyamlmerge eol=lf
+*.physicsMaterial2D text merge=unityyamlmerge eol=lf
+*.physicMaterial text merge=unityyamlmerge eol=lf
+
+# Binary assets — never diff, never normalize line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.psd binary
+*.tga binary
+*.tif binary
+*.tiff binary
+*.exr binary
+*.hdr binary
+
+*.fbx binary
+*.obj binary
+*.blend binary
+*.3ds binary
+*.dae binary
+
+*.mp3 binary
+*.ogg binary
+*.wav binary
+*.aif binary
+*.aiff binary
+
+*.mp4 binary
+*.mov binary
+*.webm binary
+
+*.dll binary
+*.exe binary
+*.pdb binary
+*.so binary
+*.dylib binary
+
+*.ttf binary
+*.otf binary
+
+# Treat these as LFS candidates if you later add Git LFS (uncomment if/when you do)
+# *.psd filter=lfs diff=lfs merge=lfs -text
+# *.fbx filter=lfs diff=lfs merge=lfs -text
+# *.png filter=lfs diff=lfs merge=lfs -text
