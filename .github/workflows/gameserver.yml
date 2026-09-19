@@ -1,15 +1,50 @@
 name: Game Server
 
-# Skeleton only. The real GameCI Linux dedicated-server build + Docker image
-# push lands in Phase 4 (docs/ROADMAP.md), once Netcode for GameObjects and
-# the server build target exist.
+# Requires UNITY_LICENSE (and UNITY_EMAIL/UNITY_PASSWORD, or UNITY_SERIAL for Pro)
+# repo secrets before this can actually run — see game-ci.org/docs/github/activation.
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [master, main]
+    paths:
+      - "Assets/**"
+      - "Packages/**"
+      - "ProjectSettings/**"
+      - "infra/docker/Dockerfile.gameserver"
+      - ".github/workflows/gameserver.yml"
+  pull_request:
+    paths:
+      - "Assets/**"
+      - "Packages/**"
+      - "ProjectSettings/**"
+      - "infra/docker/Dockerfile.gameserver"
+      - ".github/workflows/gameserver.yml"
 
 jobs:
-  build:
+  build-linux-server:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: echo "Game server build pipeline not implemented yet (Phase 4)."
+        with:
+          lfs: true
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-LinuxServer-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: Library-LinuxServer-
+
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: 6000.5.5f1
+          targetPlatform: StandaloneLinux64
+          buildMethod: BuildScript.BuildLinuxDedicatedServer
+          buildsPath: Builds/LinuxServer
+
+      - name: Build and push Docker image
+        run: |
+          docker build -f infra/docker/Dockerfile.gameserver -t cubearena-gameserver:${{ github.sha }} .

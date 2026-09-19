@@ -1,0 +1,20 @@
+# Expects a Linux dedicated-server build already produced at Builds/LinuxServer/
+# (by `BuildScript.BuildLinuxDedicatedServer` via GameCI in CI, or locally once the
+# Linux Dedicated Server Build Support module is installed — see docs/ROADMAP.md Phase 4).
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libc6 \
+    libstdc++6 \
+    libgcc-s1 \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /server
+COPY Builds/LinuxServer/ .
+RUN chmod +x CubeArena.x86_64
+
+EXPOSE 7777/udp
+
+ENTRYPOINT ["./CubeArena.x86_64", "-batchmode", "-nographics"]

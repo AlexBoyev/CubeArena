@@ -1,0 +1,17 @@
+{
+    "name": "CubeArena.Server",
+    "rootNamespace": "CubeArena.Server",
+    "references": [
+        "CubeArena.Shared",
+        "Unity.Netcode.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

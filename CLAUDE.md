@@ -10,8 +10,16 @@ plan.
   `ProjectSettings/` are siblings of `backend/`, `infra/`, `docs/`).
 - Render pipeline: URP (17.5.0).
 - Input: the new Input System package (1.19.0), not the legacy Input Manager.
-- Netcode for GameObjects + Unity Transport are added in Phase 4 — not
-  present in the project yet.
+- Netcode for GameObjects 2.13.2 + Unity Transport 2.6.0 (NGO 1.x doesn't
+  compile against this Editor version — see docs/ARCHITECTURE.md). Ticket
+  signature verification uses BouncyCastle, not `System.Security.Cryptography`
+  (its asymmetric APIs are non-functional on this Unity/Mono runtime — see
+  docs/ARCHITECTURE.md's Phase 4 platform findings before touching crypto
+  or NGO connection code).
+- This dev machine only has Windows Standalone + WebGL build support
+  installed — no Dedicated Server module for either OS. Local dedicated
+  server builds aren't possible here; the real Linux build happens in CI
+  (`.github/workflows/gameserver.yml`, via GameCI).
 - **Never hand-edit `.unity`, `.prefab`, or `.meta` files directly.** Make
   scene/prefab changes through the Unity Editor (or generate them via
   Unity's own APIs/tooling), and let Unity own `.meta` file generation.
@@ -21,7 +29,9 @@ plan.
 - ASP.NET Core minimal API (`backend/CubeArena.Api`), custom auth (not
   ASP.NET Core Identity) — see `docs/ARCHITECTURE.md` for the token/session
   design.
-- EF Core: PostgreSQL in prod, SQLite for local dev.
+- EF Core + Npgsql, Postgres both in prod and local dev (via `docker
+  compose`) — the brief's original "SQLite for local dev" was simplified
+  away in Phase 1 for dev/prod parity; flagged to the user, not yet revisited.
 
 ## Hard rules
 

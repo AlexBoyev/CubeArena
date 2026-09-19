@@ -46,10 +46,17 @@ two build targets" rule.
 | Dev OS | Windows 10 Pro |
 | Docker | Docker Desktop 27.2.0, Compose v2.29.2 |
 | .NET SDK | 8.0.101 |
-| Netcode packages | Not yet installed — added in Phase 4 (`com.unity.netcode.gameobjects`, `com.unity.transport`) |
+| Netcode packages | `com.unity.netcode.gameobjects` 2.13.2, `com.unity.transport` 2.6.0 (added Phase 4; NGO 1.x is incompatible with 6000.5.5f1 — see below) |
 | Auth model | Custom (hand-rolled users + refresh-token table), not ASP.NET Core Identity |
 | Hosting target (near-term) | Local only, via `docker compose`, through Phase 6 |
 | Source control | https://github.com/AlexBoyev/CubeArena |
+| Build modules installed (this dev machine) | Windows Standalone, WebGL. **Not installed:** Windows/Linux Dedicated Server Build Support — local dedicated-server builds aren't currently possible here; GameCI's CI image builds the real Linux server (see `.github/workflows/gameserver.yml`) |
+
+**Phase 4 platform findings, worth knowing before touching server networking code:**
+
+- NGO 1.11.0 fails to compile against Unity 6000.5.5f1 (`Object.GetInstanceID()` and `SceneHandle` implicit conversions are hard-deprecated into compiler errors on this Editor version). NGO 2.13.2 + Transport 2.6.0 compiles cleanly — use those versions or newer within the 2.x line (NGO 3.0.0 requires Unity 6000.7, which doesn't exist as a stable release yet).
+- **`System.Security.Cryptography`'s asymmetric APIs are non-functional on this Unity/Mono runtime**, verified in an actual built player (not just the Editor): `ECDsa.Create()` throws `NotImplementedException` immediately; `RSA.Create()` doesn't throw — it hangs indefinitely. This is why `TicketValidator` (`Assets/Scripts/Server/TicketValidator.cs`) uses **BouncyCastle** (`org.nuget.bouncycastle.cryptography`, via an OpenUPM scoped registry in `Packages/manifest.json`) instead — pure managed code, no dependency on Unity's broken native crypto provider bindings.
+- **NGO hashes `NetworkConfig.ConnectionApproval` into its client/server compatibility check.** If the client's `NetworkConfig.ConnectionApproval` doesn't match the server's, the connection fails silently — transport-level connect succeeds, then an immediate generic disconnect, with *zero* server-side log output (the mismatch is caught before `ConnectionApprovalCallback` is ever invoked). Both sides must set this flag to the same value.
 
 A repo hygiene issue was found and fixed before Phase 0 work started: the
 Unity `.gitignore`/`.gitattributes` had lost their leading dot on disk, so
