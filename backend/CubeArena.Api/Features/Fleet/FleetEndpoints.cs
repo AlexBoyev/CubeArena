@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using CubeArena.Api.Features.Sessions;
 using Microsoft.Extensions.Options;
 
 namespace CubeArena.Api.Features.Fleet;
@@ -7,6 +8,7 @@ namespace CubeArena.Api.Features.Fleet;
 public record RegisterServerRequest(string Host, int Port, int Capacity = 4);
 public record RegisterServerResponse(Guid GameServerId, Guid SessionId);
 public record HeartbeatRequest(Guid GameServerId, int PlayerCount);
+public record SlotSessionRequest(Guid SessionId, Guid UserId);
 
 public static class FleetEndpoints
 {
@@ -29,6 +31,18 @@ public static class FleetEndpoints
                 HeartbeatOutcome.Offline => Results.Conflict(new { error = "server_offline" }),
                 _ => Results.NotFound(new { error = "server_not_found" })
             };
+        });
+
+        group.MapPost("/sessions/confirm", async (SlotSessionRequest request, SessionService sessions, CancellationToken ct) =>
+        {
+            var found = await sessions.ConfirmSlotAsync(request.SessionId, request.UserId, ct);
+            return found ? Results.NoContent() : Results.NotFound(new { error = "slot_not_found" });
+        });
+
+        group.MapPost("/sessions/release", async (SlotSessionRequest request, SessionService sessions, CancellationToken ct) =>
+        {
+            var found = await sessions.ReleaseSlotAsync(request.SessionId, request.UserId, ct);
+            return found ? Results.NoContent() : Results.NotFound(new { error = "slot_not_found" });
         });
 
         return group;

@@ -56,3 +56,29 @@ Locked decisions (see Phase 0 discussion, not to be silently revisited):
   to script against. A hands-on interactive check (Editor Play mode or a
   couple of built clients) is worth doing before calling movement itself
   fully verified.
+
+## Phase 6 scope notes
+
+- The backend needed a small addition beyond "client-only" work: a
+  `SessionSlot`'s reservation otherwise expires with its 60s connect ticket,
+  which would incorrectly free a still-connected player's slot mid-match.
+  Added `POST /fleet/sessions/confirm` (called on connection approval, extends
+  the reservation to 24h) and `POST /fleet/sessions/release` (called on
+  disconnect, starts a 2-minute rejoin grace period) — both fleet-API-key
+  protected like the existing `/fleet/*` endpoints. Verified live: confirm
+  extends a slot's expiry to +24h, release drops it to +2min, and a rejoin
+  within that window returns the identical session and slot (also covered by
+  4 new deterministic backend unit tests).
+- The minimap is literally the documented design: a top-down orthographic
+  camera rendering the real arena to a RenderTexture — player cubes, already
+  coloured per slot, naturally appear as coloured dots from directly above.
+  No separate marker/billboard system was needed.
+- Live multi-process testing surfaced a reproducible hang in the auto-test
+  client bootstrap when a *new process* reuses login credentials from a
+  *just-closed* process within the same few seconds — isolated to this
+  specific rapid-relaunch pattern (a fresh email always works instantly, and
+  a real interactive player never relaunches the whole client process to
+  "reconnect"). The underlying confirm/release/rejoin behavior was instead
+  proven correct directly over HTTP and via the database, independent of
+  this client harness quirk. Worth a closer look if it ever surfaces outside
+  of scripted testing.

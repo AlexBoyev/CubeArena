@@ -170,7 +170,7 @@ sequenceDiagram
 | Backend traffic interception | Network MITM on HTTP(S) auth traffic | TLS on all backend endpoints; certificate pinning explicitly deferred (see below) | 7 |
 | Game-server connection flooding | Attacker spams connection attempts | Ticket-gated `ConnectionApprovalCallback`, capacity check, structured rejection reasons | 4 |
 | Stale/zombie fleet entries | Game server crashes without deregistering | Heartbeat every 10s; backend evicts entries after 3 missed heartbeats | 3/4 |
-| Fake game-server registration | Attacker registers a bogus `/fleet/register` entry to harvest real players' connect tickets | Shared-secret `X-Fleet-Api-Key` header (constant-time compare), configured only in the dedicated server's own container environment — never in a client build | 3 |
+| Fake game-server registration or slot manipulation | Attacker calls `/fleet/register` to harvest real players' connect tickets, or `/fleet/sessions/confirm`\|`release` to hijack/free another player's reserved slot | Shared-secret `X-Fleet-Api-Key` header (constant-time compare) on every `/fleet/*` endpoint, configured only in the dedicated server's own container environment — never in a client build | 3/6 |
 | Secret leakage via logs | Tokens/passwords logged accidentally | Structured JSON logs with correlation id; explicit rule to never log token or password material | 2 |
 | Secret leakage via source control | `.env` or connection string committed | `.env.example` only, nothing secret committed, CI/pre-commit secret-pattern scan | 1 |
 

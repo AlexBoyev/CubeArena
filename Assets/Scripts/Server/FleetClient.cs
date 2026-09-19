@@ -42,6 +42,21 @@ namespace CubeArena.Server
             await PostAsync("/fleet/heartbeat", body, expectJsonResponse: false);
         }
 
+        // Section 6: "rejoin into the same session if a slot is still reserved" — the
+        // backend's SessionSlot reservation otherwise expires with the 60s connect ticket,
+        // so the server must explicitly extend it for as long as the player stays connected.
+        public async Task ConfirmSlotAsync(Guid sessionId, Guid userId)
+        {
+            var body = JsonConvert.SerializeObject(new { sessionId, userId });
+            await PostAsync("/fleet/sessions/confirm", body, expectJsonResponse: false);
+        }
+
+        public async Task ReleaseSlotAsync(Guid sessionId, Guid userId)
+        {
+            var body = JsonConvert.SerializeObject(new { sessionId, userId });
+            await PostAsync("/fleet/sessions/release", body, expectJsonResponse: false);
+        }
+
         public async Task RunHeartbeatLoopAsync(TimeSpan interval, Func<int> getPlayerCount, CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)

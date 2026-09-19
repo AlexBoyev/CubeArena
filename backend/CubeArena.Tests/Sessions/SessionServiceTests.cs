@@ -136,4 +136,75 @@ public class SessionServiceTests
         Assert.Equal(QuickplayOutcome.Success, result.Outcome);
         Assert.Equal(roomySession.Id, result.SessionId);
     }
+
+    [Fact]
+    public async Task ConfirmSlotAsync_ExtendsExpiryPastTheTicketLifetime()
+    {
+        var (db, sessions, fleet, time) = CreateServices();
+        await fleet.RegisterAsync("game-server-1", 7777, capacity: 4, CancellationToken.None);
+        var userId = Guid.NewGuid();
+        var quickplay = await sessions.QuickplayAsync(userId, CancellationToken.None);
+
+        var confirmed = await sessions.ConfirmSlotAsync(quickplay.SessionId!.Value, userId, CancellationToken.None);
+        Assert.True(confirmed);
+
+        // Past the 60s ticket lifetime, the slot must still be held because it was confirmed.
+        time.Advance(TimeSpan.FromSeconds(90));
+        var stillActive = await db.SessionSlots.AnyAsync(s => s.UserId == userId && s.ExpiresAtUtc > time.GetUtcNow());
+        Assert.True(stillActive);
+    }
+
+    [Fact]
+    public async Task ConfirmSlotAsync_ReturnsFalse_ForAnUnknownUser()
+    {
+        var (_, sessions, fleet, _) = CreateServices();
+        await fleet.RegisterAsync("game-server-1", 7777, capacity: 4, CancellationToken.None);
+
+        var confirmed = await sessions.ConfirmSlotAsync(Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+        Assert.False(confirmed);
+    }
+
+    [Fact]
+    public async Task ReleaseThenRejoin_ReturnsTheSameSessionAndSlot()
+    {
+        var (_, sessions, fleet, time) = CreateServices();
+        await fleet.RegisterAsync("game-server-1", 7777, capacity: 4, CancellationToken.None);
+        var userId = Guid.NewGuid();
+
+        var original = await sessions.QuickplayAsync(userId, CancellationToken.None);
+        await sessions.ConfirmSlotAsync(original.SessionId!.Value, userId, CancellationToken.None);
+
+        // Disconnect: starts the rejoin grace period.
+        var released = await sessions.ReleaseSlotAsync(original.SessionId.Value, userId, CancellationToken.None);
+        Assert.True(released);
+
+        // Well within the grace period, quickplay again returns the same slot.
+        time.Advance(TimeSpan.FromSeconds(30));
+        var rejoined = await sessions.QuickplayAsync(userId, CancellationToken.None);
+
+        Assert.Equal(QuickplayOutcome.Success, rejoined.Outcome);
+        Assert.Equal(original.SessionId, rejoined.SessionId);
+        Assert.Equal(original.SlotIndex, rejoined.SlotIndex);
+    }
+
+    [Fact]
+    public async Task ReleaseSlot_AfterGracePeriodExpires_FreesTheSlotForSomeoneElse()
+    {
+        var (_, sessions, fleet, time) = CreateServices();
+        await fleet.RegisterAsync("game-server-1", 7777, capacity: 1, CancellationToken.None);
+        var userId = Guid.NewGuid();
+
+        var original = await sessions.QuickplayAsync(userId, CancellationToken.None);
+        await sessions.ConfirmSlotAsync(original.SessionId!.Value, userId, CancellationToken.None);
+        await sessions.ReleaseSlotAsync(original.SessionId.Value, userId, CancellationToken.None);
+
+        // Past the rejoin grace period, the slot is free for a new player.
+        time.Advance(SessionService.RejoinGracePeriod + TimeSpan.FromSeconds(1));
+        var newPlayer = await sessions.QuickplayAsync(Guid.NewGuid(), CancellationToken.None);
+
+        Assert.Equal(QuickplayOutcome.Success, newPlayer.Outcome);
+        Assert.Equal(original.SessionId, newPlayer.SessionId);
+        Assert.Equal(original.SlotIndex, newPlayer.SlotIndex);
+    }
 }

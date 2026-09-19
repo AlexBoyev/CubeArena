@@ -22,6 +22,7 @@ namespace CubeArena.Client
         private GameObject _characterSelectPanel;
         private GameObject _connectingPanel;
         private GameObject _hudPanel;
+        private GameObject _minimap;
         private Text _loginStatus;
         private Text _selectStatus;
         private Text _hudText;
@@ -62,6 +63,18 @@ namespace CubeArena.Client
         private void OnDestroy()
         {
             PlayerController.LocalPlayerSpawned -= OnLocalPlayerSpawned;
+        }
+
+        // Graceful leave (section 6): shut the connection down cleanly instead of just
+        // letting the process die, so the server's disconnect callback (and therefore
+        // the backend's release-slot call) fires immediately rather than waiting for a
+        // transport timeout.
+        private void OnApplicationQuit()
+        {
+            if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsClient)
+            {
+                NetworkManager.Singleton.Shutdown();
+            }
         }
 
         private void BuildUi()
@@ -105,12 +118,15 @@ namespace CubeArena.Client
 
         private void BuildHud()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 60));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 130));
             panelRect.anchorMin = panelRect.anchorMax = new Vector2(0f, 1f);
             panelRect.pivot = new Vector2(0f, 1f);
             panelRect.anchoredPosition = new Vector2(16, -16);
             _hudPanel = panelRect.gameObject;
-            _hudText = UiFactory.CreateText(panelRect, "", 18, Vector2.zero, new Vector2(240, 50));
+            _hudText = UiFactory.CreateText(panelRect, "", 18, new Vector2(0, 30), new Vector2(240, 50));
+            UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -35), OnLeaveClicked);
+
+            _minimap = Minimap.Create(_canvas.transform).gameObject;
         }
 
         private void ShowOnly(GameObject panel)
@@ -119,6 +135,7 @@ namespace CubeArena.Client
             _characterSelectPanel.SetActive(panel == _characterSelectPanel);
             _connectingPanel.SetActive(panel == _connectingPanel);
             _hudPanel.SetActive(panel == _hudPanel);
+            _minimap.SetActive(panel == _hudPanel);
         }
 
         private async void OnRegisterClicked()
@@ -200,6 +217,13 @@ namespace CubeArena.Client
             var reason = NetworkManager.Singleton != null ? NetworkManager.Singleton.DisconnectReason : null;
             _selectStatus.text = string.IsNullOrEmpty(reason) ? "Disconnected." : $"Disconnected: {reason}";
             ShowOnly(_characterSelectPanel);
+        }
+
+        private void OnLeaveClicked()
+        {
+            // Triggers the same OnClientDisconnectCallback path as a timeout or crash —
+            // OnDisconnected handles returning to character select either way.
+            NetworkManager.Singleton?.Shutdown();
         }
 
         private async Task RunAutoTestAsync()

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using CubeArena.Shared;
@@ -14,6 +15,8 @@ namespace CubeArena.Server
     public class ServerBootstrap : MonoBehaviour
     {
         private CancellationTokenSource _heartbeatCts;
+        private readonly Dictionary<ulong, Guid> _connectedUsers = new();
+        private FleetClient _fleet;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoBootstrap()
@@ -57,13 +60,25 @@ namespace CubeArena.Server
                 $"{config.BackendUrl}/.well-known/jwks.json", config.TicketKeyId);
             var validator = new TicketValidator(publicKey, config.TicketIssuer, config.TicketAudience);
 
-            var fleet = new FleetClient(config.BackendUrl, config.FleetApiKey);
-            await fleet.RegisterAsync(config.AdvertiseHost, config.ListenPort, config.Capacity);
+            _fleet = new FleetClient(config.BackendUrl, config.FleetApiKey);
+            await _fleet.RegisterAsync(config.AdvertiseHost, config.ListenPort, config.Capacity);
 
-            var approval = new ConnectionApprovalHandler(validator, networkManager, fleet.SessionId, config.Capacity);
+            var approval = new ConnectionApprovalHandler(validator, networkManager, _fleet.SessionId, config.Capacity);
             networkManager.ConnectionApprovalCallback = approval.Approve;
             approval.ClientApproved += (clientId, userId, slotIndex) =>
+            {
+                _connectedUsers[clientId] = userId;
                 SpawnPlayer(networkManager, playerTemplate, clientId, slotIndex);
+                _ = ConfirmSlotSafeAsync(userId);
+            };
+
+            networkManager.OnClientDisconnectCallback += clientId =>
+            {
+                if (_connectedUsers.Remove(clientId, out var userId))
+                {
+                    _ = ReleaseSlotSafeAsync(userId);
+                }
+            };
 
             if (!networkManager.StartServer())
             {
@@ -72,10 +87,10 @@ namespace CubeArena.Server
             }
 
             Debug.Log($"[ServerBootstrap] Listening on 0.0.0.0:{config.ListenPort}, " +
-                      $"advertising {config.AdvertiseHost}:{config.ListenPort}, session {fleet.SessionId}");
+                      $"advertising {config.AdvertiseHost}:{config.ListenPort}, session {_fleet.SessionId}");
 
             _heartbeatCts = new CancellationTokenSource();
-            _ = fleet.RunHeartbeatLoopAsync(
+            _ = _fleet.RunHeartbeatLoopAsync(
                 TimeSpan.FromSeconds(10),
                 () => networkManager.ConnectedClientsIds.Count,
                 _heartbeatCts.Token);
@@ -84,6 +99,30 @@ namespace CubeArena.Server
         private void OnApplicationQuit()
         {
             _heartbeatCts?.Cancel();
+        }
+
+        private async Task ConfirmSlotSafeAsync(Guid userId)
+        {
+            try
+            {
+                await _fleet.ConfirmSlotAsync(_fleet.SessionId, userId);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[ServerBootstrap] ConfirmSlot failed for user {userId}: {e.Message}");
+            }
+        }
+
+        private async Task ReleaseSlotSafeAsync(Guid userId)
+        {
+            try
+            {
+                await _fleet.ReleaseSlotAsync(_fleet.SessionId, userId);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[ServerBootstrap] ReleaseSlot failed for user {userId}: {e.Message}");
+            }
         }
 
         private static void SpawnPlayer(NetworkManager networkManager, GameObject playerTemplate, ulong clientId, int slotIndex)

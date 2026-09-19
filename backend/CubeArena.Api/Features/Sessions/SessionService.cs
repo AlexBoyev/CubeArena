@@ -26,6 +26,18 @@ public class SessionService(
     IOptions<TicketOptions> ticketOptions,
     TimeProvider timeProvider)
 {
+    // How long a disconnected player's slot stays reserved before it's free for
+    // someone else to take (section 6: "rejoin into the same session if a slot
+    // is still reserved"). Deliberately longer than the 60s connect-ticket
+    // lifetime, which only governs how long a fresh ticket is valid for.
+    public static readonly TimeSpan RejoinGracePeriod = TimeSpan.FromMinutes(2);
+
+    // A slot is "confirmed" (the player is actually connected to the game server)
+    // by extending its expiry far past any realistic match length, so quickplay's
+    // occupancy check keeps treating it as occupied without needing a schema change.
+    private static readonly TimeSpan ConfirmedSlotLifetime = TimeSpan.FromHours(24);
+
+
     public async Task<QuickplayResult> QuickplayAsync(Guid userId, CancellationToken ct)
     {
         var now = timeProvider.GetUtcNow();
@@ -91,5 +103,45 @@ public class SessionService(
         }
 
         return new QuickplayResult(QuickplayOutcome.NoCapacity);
+    }
+
+    // Called by the game server when a client's connect ticket is approved, so the
+    // reservation outlives the ticket's own 60s lifetime for as long as they're connected.
+    public async Task<bool> ConfirmSlotAsync(Guid sessionId, Guid userId, CancellationToken ct)
+    {
+        var now = timeProvider.GetUtcNow();
+        var slot = await db.SessionSlots
+            .Where(s => s.SessionId == sessionId && s.UserId == userId && s.ExpiresAtUtc > now)
+            .OrderByDescending(s => s.ReservedAtUtc)
+            .FirstOrDefaultAsync(ct);
+
+        if (slot is null)
+        {
+            return false;
+        }
+
+        slot.ExpiresAtUtc = now + ConfirmedSlotLifetime;
+        await db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    // Called by the game server when a client disconnects, starting the rejoin grace
+    // period instead of leaving the slot reserved indefinitely (ConfirmedSlotLifetime).
+    public async Task<bool> ReleaseSlotAsync(Guid sessionId, Guid userId, CancellationToken ct)
+    {
+        var now = timeProvider.GetUtcNow();
+        var slot = await db.SessionSlots
+            .Where(s => s.SessionId == sessionId && s.UserId == userId && s.ExpiresAtUtc > now)
+            .OrderByDescending(s => s.ReservedAtUtc)
+            .FirstOrDefaultAsync(ct);
+
+        if (slot is null)
+        {
+            return false;
+        }
+
+        slot.ExpiresAtUtc = now + RejoinGracePeriod;
+        await db.SaveChangesAsync(ct);
+        return true;
     }
 }
