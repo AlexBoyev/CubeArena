@@ -23,6 +23,9 @@ on:
 jobs:
   build-linux-server:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +48,18 @@ jobs:
           buildMethod: BuildScript.BuildLinuxDedicatedServer
           buildsPath: Builds/LinuxServer
 
-      - name: Build and push Docker image
-        run: |
-          docker build -f infra/docker/Dockerfile.gameserver -t cubearena-gameserver:${{ github.sha }} .
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/Dockerfile.gameserver
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cubearena-gameserver:latest
+            ghcr.io/${{ github.repository_owner }}/cubearena-gameserver:${{ github.sha }}
