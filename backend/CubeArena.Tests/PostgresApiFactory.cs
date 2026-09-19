@@ -5,10 +5,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
 using Xunit;
 
-namespace CubeArena.Tests.Auth;
+namespace CubeArena.Tests;
 
-// Spins up a real Postgres container so auth integration tests exercise the same
-// EF Core/Npgsql path as production, per docs/ROADMAP.md Phase 2's testing bar.
+// Spins up a real Postgres container so integration tests exercise the same
+// EF Core/Npgsql path as production, per docs/ROADMAP.md's testing bar.
 public class PostgresApiFactory : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
@@ -18,6 +18,7 @@ public class PostgresApiFactory : IAsyncLifetime
     private WebApplicationFactory<Program>? _factory;
 
     public HttpClient CreateClient() => Factory.CreateClient();
+    public IServiceProvider Services => Factory.Services;
 
     private WebApplicationFactory<Program> Factory =>
         _factory ?? throw new InvalidOperationException("Factory not initialized yet.");

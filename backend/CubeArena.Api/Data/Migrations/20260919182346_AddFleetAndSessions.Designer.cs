@@ -3,6 +3,7 @@ using System;
 using CubeArena.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CubeArena.Api.Data.Migrations
 {
     [DbContext(typeof(CubeArenaDbContext))]
-    partial class CubeArenaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260919182346_AddFleetAndSessions")]
+    partial class AddFleetAndSessions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

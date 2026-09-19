@@ -1,6 +1,8 @@
 using System.Threading.RateLimiting;
 using CubeArena.Api.Data;
 using CubeArena.Api.Features.Auth;
+using CubeArena.Api.Features.Fleet;
+using CubeArena.Api.Features.Sessions;
 using HealthChecks.NpgSql;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -28,6 +30,14 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<PasswordHasher>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<AuthService>();
+
+builder.Services.Configure<FleetOptions>(builder.Configuration.GetSection(FleetOptions.SectionName));
+builder.Services.AddScoped<FleetService>();
+builder.Services.AddHostedService<StaleFleetSweepService>();
+
+builder.Services.Configure<TicketOptions>(builder.Configuration.GetSection(TicketOptions.SectionName));
+builder.Services.AddSingleton<TicketService>();
+builder.Services.AddScoped<SessionService>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
@@ -66,6 +76,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapAuthEndpoints();
+app.MapFleetEndpoints();
+app.MapSessionEndpoints();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
