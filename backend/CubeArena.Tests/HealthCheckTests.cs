@@ -9,8 +9,7 @@ public class HealthCheckTests : IClassFixture<WebApplicationFactory<Program>>
 
     public HealthCheckTests(WebApplicationFactory<Program> factory)
     {
-        _factory = factory.WithWebHostBuilder(builder =>
-            builder.UseSetting("ConnectionStrings:Postgres", "Host=localhost;Port=5432;Database=test;Username=test;Password=test"));
+        _factory = factory.ForTesting("Host=localhost;Port=5432;Database=test;Username=test;Password=test");
     }
 
     [Fact]

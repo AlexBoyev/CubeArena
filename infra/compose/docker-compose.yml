@@ -28,6 +28,7 @@ services:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      Auth__SigningKey: ${AUTH_SIGNING_KEY:?AUTH_SIGNING_KEY must be set in .env}
     ports:
       - "${API_PORT:-8080}:8080"
 
