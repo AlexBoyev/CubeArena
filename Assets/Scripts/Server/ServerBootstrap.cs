@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using CubeArena.Shared;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
@@ -31,6 +32,13 @@ namespace CubeArena.Server
 
         public async Task RunAsync(ServerConfig config)
         {
+            Time.fixedDeltaTime = 1f / MovementConstants.ServerTickRate;
+
+            ArenaBuilder.Build();
+
+            var playerTemplate = PlayerController.CreateTemplate();
+            playerTemplate.SetActive(false);
+
             var networkManager = GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
             var transport = GetComponent<UnityTransport>() ?? gameObject.AddComponent<UnityTransport>();
 
@@ -41,6 +49,7 @@ namespace CubeArena.Server
             // connection fails silently with a generic disconnect before ConnectionApprovalCallback
             // ever runs (no server-side log at all, since it's rejected before reaching that code).
             networkManager.NetworkConfig.ConnectionApproval = true;
+            networkManager.AddNetworkPrefab(playerTemplate);
 
             transport.SetConnectionData(config.AdvertiseHost, config.ListenPort, listenAddress: "0.0.0.0");
 
@@ -53,6 +62,8 @@ namespace CubeArena.Server
 
             var approval = new ConnectionApprovalHandler(validator, networkManager, fleet.SessionId, config.Capacity);
             networkManager.ConnectionApprovalCallback = approval.Approve;
+            approval.ClientApproved += (clientId, userId, slotIndex) =>
+                SpawnPlayer(networkManager, playerTemplate, clientId, slotIndex);
 
             if (!networkManager.StartServer())
             {
@@ -73,6 +84,15 @@ namespace CubeArena.Server
         private void OnApplicationQuit()
         {
             _heartbeatCts?.Cancel();
+        }
+
+        private static void SpawnPlayer(NetworkManager networkManager, GameObject playerTemplate, ulong clientId, int slotIndex)
+        {
+            var spawnPosition = SpawnPoints.Get(slotIndex);
+            var networkObject = NetworkObject.InstantiateAndSpawn(
+                playerTemplate, networkManager, ownerClientId: clientId, isPlayerObject: true, position: spawnPosition);
+
+            networkObject.GetComponent<PlayerController>().ServerInitialize(slotIndex, spawnPosition);
         }
     }
 }

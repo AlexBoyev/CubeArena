@@ -14,6 +14,23 @@ public static class BuildScript
     public static void BuildWindowsDedicatedServer() =>
         BuildDedicatedServer(BuildTarget.StandaloneWindows64, "Builds/WindowsServer/CubeArena.exe");
 
+    // Diagnostic-only: a plain Standalone build (this machine lacks the Dedicated Server
+    // module) used with DiagnosticServerEntryPoint/plain client bootstrap for local testing.
+    public static void BuildWindowsDiagnostic()
+    {
+        EditorUserBuildSettings.standaloneBuildSubtarget = StandaloneBuildSubtarget.Player;
+
+        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+        {
+            scenes = new[] { ServerScenePath },
+            locationPathName = "Builds/Diagnostic/CubeArenaDiagnostic.exe",
+            target = BuildTarget.StandaloneWindows64,
+            options = BuildOptions.None
+        });
+
+        UnityEngine.Debug.Log($"Build result: {report.summary.result}, errors: {report.summary.totalErrors}");
+    }
+
     private static void BuildDedicatedServer(BuildTarget target, string outputPath)
     {
         EditorUserBuildSettings.standaloneBuildSubtarget = StandaloneBuildSubtarget.Server;

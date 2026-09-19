@@ -3,7 +3,10 @@
     "rootNamespace": "CubeArena.Client",
     "references": [
         "CubeArena.Shared",
-        "Unity.Netcode.Runtime"
+        "Unity.Netcode.Runtime",
+        "Unity.Networking.Transport",
+        "Unity.InputSystem",
+        "UnityEngine.UI"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

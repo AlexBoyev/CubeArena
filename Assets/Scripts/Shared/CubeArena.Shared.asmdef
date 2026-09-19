@@ -2,7 +2,8 @@
     "name": "CubeArena.Shared",
     "rootNamespace": "CubeArena.Shared",
     "references": [
-        "Unity.Netcode.Runtime"
+        "Unity.Netcode.Runtime",
+        "Unity.InputSystem"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

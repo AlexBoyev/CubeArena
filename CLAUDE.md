@@ -23,6 +23,16 @@ plan.
 - **Never hand-edit `.unity`, `.prefab`, or `.meta` files directly.** Make
   scene/prefab changes through the Unity Editor (or generate them via
   Unity's own APIs/tooling), and let Unity own `.meta` file generation.
+- The arena, player cubes, and all UI (login/character-select/HUD) are built
+  entirely from code at runtime (`ArenaBuilder`, `PlayerController.CreateTemplate`,
+  `UiFactory`) — there are no scene-authored GameObjects or prefab assets to
+  edit for any of this; extend the builder code instead.
+- `ServerBootstrap`/`ClientBootstrap` auto-run via `#if UNITY_SERVER` /
+  `#if !UNITY_SERVER` respectively — both scripts live in every build target
+  (no asmdef platform restriction), so this compile-time gate is what keeps
+  a Dedicated Server build from also trying to boot as a client, and vice
+  versa. Keep any future "only the server does X" / "only the client does X"
+  bootstrap logic behind the same gate.
 
 ## Backend
 

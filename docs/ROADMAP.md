@@ -37,3 +37,22 @@ Locked decisions (see Phase 0 discussion, not to be silently revisited):
   console/test harness, not the real game server.
 - Phase 7 is the only phase that touches a real external host; Phases 0–6
   are fully reproducible with `docker compose up` on your own machine.
+
+## Phase 5 scope notes
+
+- Display name (section 6) is captured in the character-select UI and stored
+  locally (`PlayerPrefs`) but **not sent to the backend** — there's no
+  endpoint to update it, and it has no gameplay effect in this prototype.
+  Only the server-assigned colour (from the ticket's `slot` claim) identifies
+  players to each other.
+- "See which colours are free" is satisfied narrowly: quickplay's response
+  (host/port/ticket/slot) already tells the player their own assigned colour
+  once they commit to joining. There's no pre-join lobby view of a session's
+  current occupancy — the backend has no endpoint for that, and adding one
+  was judged out of scope for a client-focused phase.
+- Movement (WASD, prediction, reconciliation) was verified by direct code
+  review and a live 4-client connectivity test (see docs/NETCODE.md), not by
+  automated input simulation — headless batchmode has no real keyboard/window
+  to script against. A hands-on interactive check (Editor Play mode or a
+  couple of built clients) is worth doing before calling movement itself
+  fully verified.
