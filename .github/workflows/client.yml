@@ -1,0 +1,17 @@
+name: Client
+
+# Skeleton only. The real Windows client build lands in Phase 7
+# (docs/ROADMAP.md), triggered on version tags.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Windows client build pipeline not implemented yet (Phase 7)."

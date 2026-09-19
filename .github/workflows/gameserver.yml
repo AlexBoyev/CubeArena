@@ -1,0 +1,15 @@
+name: Game Server
+
+# Skeleton only. The real GameCI Linux dedicated-server build + Docker image
+# push lands in Phase 4 (docs/ROADMAP.md), once Netcode for GameObjects and
+# the server build target exist.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Game server build pipeline not implemented yet (Phase 4)."

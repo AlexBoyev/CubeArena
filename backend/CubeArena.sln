@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CubeArena.Api", "CubeArena.Api\CubeArena.Api.csproj", "{66CD8CD5-A61F-4D48-8166-7C243B9AA87F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CubeArena.Domain", "CubeArena.Domain\CubeArena.Domain.csproj", "{4030597C-A728-406C-B1F6-7A74D6B72D12}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CubeArena.Tests", "CubeArena.Tests\CubeArena.Tests.csproj", "{335C8634-71DE-4363-89A7-67066D3D111E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{66CD8CD5-A61F-4D48-8166-7C243B9AA87F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{66CD8CD5-A61F-4D48-8166-7C243B9AA87F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{66CD8CD5-A61F-4D48-8166-7C243B9AA87F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{66CD8CD5-A61F-4D48-8166-7C243B9AA87F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4030597C-A728-406C-B1F6-7A74D6B72D12}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4030597C-A728-406C-B1F6-7A74D6B72D12}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4030597C-A728-406C-B1F6-7A74D6B72D12}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4030597C-A728-406C-B1F6-7A74D6B72D12}.Release|Any CPU.Build.0 = Release|Any CPU
+		{335C8634-71DE-4363-89A7-67066D3D111E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{335C8634-71DE-4363-89A7-67066D3D111E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{335C8634-71DE-4363-89A7-67066D3D111E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{335C8634-71DE-4363-89A7-67066D3D111E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
