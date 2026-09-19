@@ -25,7 +25,7 @@ Locked decisions (see Phase 0 discussion, not to be silently revisited):
 | 4 | Unity dedicated server build (headless Linux), NGO + Unity Transport added, `ConnectionApprovalCallback` implemented | A Dockerised game server container rejects a deliberately bad ticket (bad signature, wrong `sid`, replayed `jti`, expired, server full) and accepts a good one, with structured rejection reasons |
 | 5 | Unity client: character-select screen, connect flow, arena + character cubes, server-authoritative movement with client prediction/reconciliation | Four client instances on one machine connect, move independently, and see each other's positions update correctly |
 | 6 | Minimap, disconnect handling, rejoin into a reserved slot, general polish | Manual playtest: all four colours render correctly, minimap dots track players, a disconnect-and-rejoin round trip preserves the player's slot |
-| 7 | `SECURITY.md`, `HOSTING.md`, real deploy | The game is reachable and playable from a second physical machine over the internet |
+| 7 | `SECURITY.md`, `HOSTING.md`, real deploy | The game is reachable and playable from a second physical machine over the internet — **docs and CI done; the actual deploy needs your infrastructure, see below** |
 
 ## Notes on sequencing
 
@@ -82,3 +82,24 @@ Locked decisions (see Phase 0 discussion, not to be silently revisited):
   proven correct directly over HTTP and via the database, independent of
   this client harness quirk. Worth a closer look if it ever surfaces outside
   of scripted testing.
+
+## Phase 7 status
+
+`SECURITY.md` and `HOSTING.md` are written, and `backend.yml`/`gameserver.yml`
+both build and push their Docker images to GHCR using the built-in
+`GITHUB_TOKEN` — no user credentials needed for that part.
+
+**The actual deploy is not done** — it genuinely can't be, from here. It
+needs:
+
+1. A real VM from a cloud provider (an account, payment, and a provider
+   choice are yours to make — `docs/HOSTING.md` tier 2 has cost estimates
+   for a few options).
+2. A real domain name pointed at that VM (Caddy's automatic TLS needs one).
+3. `UNITY_LICENSE` (+ `UNITY_EMAIL`/`UNITY_PASSWORD`, or `UNITY_SERIAL` for
+   Pro) added as GitHub repo secrets, so `gameserver.yml` can actually build
+   the real Linux server in CI — see the workflow's header comment and
+   game-ci.org/docs/github/activation.
+
+Once you have those three things, `docs/HOSTING.md`'s tier 2 section is a
+literal, copy-pasteable runbook for the rest.
