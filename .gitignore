@@ -6,6 +6,10 @@
 [Oo]bj/
 [Bb]uild/
 [Bb]uilds/
+
+# Tier 0 (docs/HOSTING.md): ready-to-run client copy dropped at the repo
+# root by package-client.ps1 - never committed, same reasoning as Builds/.
+/Play/
 [Ll]ogs/
 [Mm]emoryCaptures/
 [Uu]serSettings/

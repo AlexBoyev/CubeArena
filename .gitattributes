@@ -13,6 +13,15 @@
 *.asmdef text
 *.asmref text
 
+# Windows-only helper scripts — CRLF is fine/expected here
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# Git hooks are executed via /bin/sh — must stay LF regardless of the
+# checkout platform, or the shebang/script breaks (see
+# infra/compose/install-git-hooks.ps1).
+infra/compose/hooks/* text eol=lf
+
 # Unity YAML-based assets — treat as text so merges/diffs work,
 # but Unity's own YAML merge tool (via UnityYAMLMerge) handles conflicts better
 *.unity text merge=unityyamlmerge eol=lf

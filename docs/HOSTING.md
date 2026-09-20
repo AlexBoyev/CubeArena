@@ -124,14 +124,23 @@ dedicated game server has **two ways to run**, both documented below:
    into the "server address" field, register/log in with a distinct
    account per player, then Quick Play. Each should land in a different
    coloured slot in the same match.
-10. **Package a client to hand to remote players.** Two ways to get the
-    zip, pick whichever's more convenient:
-    - **Locally**: `.\package-client.ps1` (from `infra/compose/`) builds
-      the client fresh and zips it into a single
-      `Builds/CubeArena-Client.zip`, with a `README.txt` inside containing
-      *today's* connect string (baked in at package time — re-run this any
-      time `PUBLIC_HOST` changes). Fastest way to get a zip with the
-      correct address already in it.
+10. **Package a client to hand to remote players.** Three ways to get it,
+    pick whichever's more convenient:
+    - **Locally, on demand**: `.\package-client.ps1` (from
+      `infra/compose/`) builds the client fresh and drops it in two
+      places: `Builds/CubeArena-Client.zip` (the one file to share) and
+      `Play/CubeArena.exe` at the repo root, ready to double-click without
+      unzipping anything — both include a `README.txt`/baked-in connect
+      string pulled from `PUBLIC_HOST` in `.env` at package time.
+    - **Locally, automatically**: after running
+      `.\install-git-hooks.ps1` once (installs a `pre-push` hook — git
+      never tracks `.git/hooks/` itself, so this is the one-time setup
+      step), `Play/` and the zip rebuild themselves in the background on
+      every `git push`, so they always match what's on `master`. Runs
+      detached — never blocks or delays the push. If Unity's Editor
+      happens to be open at push time the rebuild is skipped (not
+      queued); check `infra/compose/package_client_hook.log` if `Play/`
+      seems stale.
     - **From CI**: `.github/workflows/client.yml` rebuilds the client on
       every push to `master` and publishes it as the
       [`latest-client` GitHub release](../../releases/tag/latest-client) —

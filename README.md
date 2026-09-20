@@ -185,10 +185,13 @@ docker compose up -d postgres api        # backend
 .\print-connect-info.ps1                  # prints the connect string to hand players
 ```
 
-To get a client for players to run (no Unity install needed on their end),
-either build one locally with `.\package-client.ps1` (bakes in today's
-connect string), or grab the one CI rebuilds on every push to `master`:
-the [`latest-client` release](../../releases/tag/latest-client).
+To get a client for players to run (no Unity install needed on their end):
+build one locally with `.\package-client.ps1` (drops a ready-to-run copy at
+`Play/CubeArena.exe`, plus `Builds/CubeArena-Client.zip` to share, both with
+today's connect string baked in); run `.\install-git-hooks.ps1` once so
+`Play/`/the zip rebuild themselves automatically in the background on every
+`git push`; or grab the one CI rebuilds on every push to `master`: the
+[`latest-client` release](../../releases/tag/latest-client).
 
 Tier 2 (a real internet-reachable deploy on a cloud VM, once the game is
 worth deploying that far) and Tier 3 (managed/scaling sketch) are also

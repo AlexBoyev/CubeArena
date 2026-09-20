@@ -67,7 +67,20 @@ Compress-Archive -Path "$clientDir\*" -DestinationPath $zipPath
 
 Remove-Item $buildLog -ErrorAction SilentlyContinue
 
+# Also drop a ready-to-run copy at the project root's Play/ folder, so it's
+# immediately visible next to the project instead of buried under Builds/.
+# A single, separate, gitignored folder rather than loose files scattered
+# into the bare repo root (which also has Assets/, .git/, etc.).
+$playDir = Join-Path $repoRoot "Play"
+Remove-Item $playDir -Recurse -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $playDir | Out-Null
+Copy-Item "$clientDir\*" -Destination $playDir -Recurse
+Copy-Item $zipPath -Destination $playDir
+
 Write-Host ""
 Write-Host "Done. Share this one file:" -ForegroundColor Green
 Write-Host "  $zipPath" -ForegroundColor White
 Write-Host "($([math]::Round((Get-Item $zipPath).Length / 1MB, 1)) MB)"
+Write-Host ""
+Write-Host "Also ready to run right here:" -ForegroundColor Green
+Write-Host "  $playDir\CubeArena.exe" -ForegroundColor White

@@ -1,0 +1,19 @@
+#!/bin/sh
+command -v git-lfs >/dev/null 2>&1 || { printf >&2 "\n%s\n\n" "This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'pre-push' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks')."; exit 2; }
+git lfs pre-push "$@"
+
+# Cube Arena: rebuild the client package (zip + Play/) in the background
+# after each push, so they always reflect what was just pushed - see
+# infra/compose/package-client.ps1. Runs detached so it never blocks or
+# delays the push; check infra/compose/package_client_hook.log if Play/
+# doesn't seem to have updated (e.g. Unity Editor was open at push time,
+# in which case the build is skipped, not queued).
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+if command -v powershell.exe >/dev/null 2>&1; then
+  (
+    cd "$REPO_ROOT" || exit 0
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "infra/compose/package-client.ps1" \
+      > "infra/compose/package_client_hook.log" 2>&1
+  ) &
+  disown 2>/dev/null
+fi
