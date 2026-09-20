@@ -104,6 +104,54 @@ namespace CubeArena.Client
             return inputField;
         }
 
+        public static Toggle CreateToggle(Transform parent, string label, Vector2 anchoredPosition, bool defaultValue = false)
+        {
+            var go = new GameObject($"Toggle_{label}", typeof(Toggle));
+            go.transform.SetParent(parent, false);
+            var rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = anchoredPosition;
+            rect.sizeDelta = new Vector2(300, 26);
+
+            var backgroundGo = new GameObject("Background", typeof(Image));
+            backgroundGo.transform.SetParent(go.transform, false);
+            var backgroundRect = backgroundGo.GetComponent<RectTransform>();
+            backgroundRect.anchorMin = backgroundRect.anchorMax = new Vector2(0f, 0.5f);
+            backgroundRect.pivot = new Vector2(0f, 0.5f);
+            backgroundRect.anchoredPosition = Vector2.zero;
+            backgroundRect.sizeDelta = new Vector2(22, 22);
+            backgroundGo.GetComponent<Image>().color = Color.white;
+
+            var checkmarkGo = new GameObject("Checkmark", typeof(Image));
+            checkmarkGo.transform.SetParent(backgroundGo.transform, false);
+            var checkmarkRect = checkmarkGo.GetComponent<RectTransform>();
+            checkmarkRect.anchorMin = Vector2.zero;
+            checkmarkRect.anchorMax = Vector2.one;
+            checkmarkRect.offsetMin = new Vector2(4, 4);
+            checkmarkRect.offsetMax = new Vector2(-4, -4);
+            checkmarkGo.GetComponent<Image>().color = new Color(0.2f, 0.5f, 0.9f);
+
+            var labelGo = new GameObject("Label", typeof(Text));
+            labelGo.transform.SetParent(go.transform, false);
+            var labelRect = labelGo.GetComponent<RectTransform>();
+            labelRect.anchorMin = new Vector2(0f, 0f);
+            labelRect.anchorMax = new Vector2(1f, 1f);
+            labelRect.offsetMin = new Vector2(30, 0);
+            labelRect.offsetMax = Vector2.zero;
+            var labelText = labelGo.GetComponent<Text>();
+            labelText.text = label;
+            labelText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            labelText.fontSize = 16;
+            labelText.color = Color.white;
+            labelText.alignment = TextAnchor.MiddleLeft;
+
+            var toggle = go.GetComponent<Toggle>();
+            toggle.targetGraphic = backgroundGo.GetComponent<Image>();
+            toggle.graphic = checkmarkGo.GetComponent<Image>();
+            toggle.isOn = defaultValue;
+            return toggle;
+        }
+
         public static Button CreateButton(Transform parent, string label, Vector2 anchoredPosition, UnityEngine.Events.UnityAction onClick, Vector2? size = null)
         {
             var go = new GameObject($"Button_{label}", typeof(Image), typeof(Button));

@@ -14,6 +14,10 @@ namespace CubeArena.Server
     // editing a .unity or .prefab asset. See CLAUDE.md.
     public class ServerBootstrap : MonoBehaviour
     {
+        // No win/score conditions exist yet (see docs/ROADMAP.md) — this is a simple
+        // round-timer placeholder for now, not a real match-end condition.
+        private const float MatchDurationSeconds = 300f; // 5 minutes
+
         private CancellationTokenSource _heartbeatCts;
         private readonly Dictionary<ulong, Guid> _connectedUsers = new();
         private readonly Dictionary<ulong, (Guid UserId, int SlotIndex)> _approvedPendingConnect = new();
@@ -118,11 +122,45 @@ namespace CubeArena.Server
                 TimeSpan.FromSeconds(10),
                 () => networkManager.ConnectedClientsIds.Count,
                 _heartbeatCts.Token);
+            _ = RunMatchTimerLoopAsync(networkManager, _heartbeatCts.Token);
         }
 
         private void OnApplicationQuit()
         {
             _heartbeatCts?.Cancel();
+        }
+
+        // A leaving player only ever affects their own slot (OnClientDisconnectCallback
+        // above) — the server, and everyone else's session, keeps running regardless.
+        // This loop is the other half: a hard cap on how long a match can run before
+        // everyone's sent back to character select and a fresh match window starts,
+        // rather than one match running forever. The server process itself is untouched
+        // either way — quick play can match players into it again immediately after.
+        private async Task RunMatchTimerLoopAsync(NetworkManager networkManager, CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(MatchDurationSeconds), token);
+
+                    var connectedClientIds = new List<ulong>(networkManager.ConnectedClientsIds);
+                    foreach (var clientId in connectedClientIds)
+                    {
+                        networkManager.DisconnectClient(clientId,
+                            "Match ended (5 minute time limit) — quick play again to start a new match.");
+                    }
+
+                    if (connectedClientIds.Count > 0)
+                    {
+                        Debug.Log($"[ServerBootstrap] Match timer expired — disconnected {connectedClientIds.Count} client(s). Starting a new match window.");
+                    }
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                // Expected on shutdown — OnApplicationQuit cancels this token.
+            }
         }
 
         private async Task ConfirmSlotSafeAsync(Guid userId)

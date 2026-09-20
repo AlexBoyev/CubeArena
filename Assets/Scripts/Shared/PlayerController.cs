@@ -19,11 +19,20 @@ namespace CubeArena.Shared
 
         private const float ReconcileSnapThresholdSqr = 4f; // snap if off by more than 2m (e.g. on spawn)
         private const float ReconcileBlendSpeed = 5f;
+        private const float StandingControllerHeight = 1.9f;
+        private const float CrouchControllerHeight = 1.1f;
+        private const float CrouchVisualScaleY = 0.6f;
+        private const float WalkSwingSpeed = 9f; // walk-cycle phase advance per meter traveled
+        private const float MaxSwingAngleDeg = 35f;
+        private const float PoseLerpSpeed = 8f;
 
         private readonly NetworkVariable<Vector3> _serverPosition = new(
             writePerm: NetworkVariableWritePermission.Server);
 
         private readonly NetworkVariable<int> _slotIndex = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
+        private readonly NetworkVariable<bool> _isCrouching = new(
             writePerm: NetworkVariableWritePermission.Server);
 
         private CharacterController _characterController;
@@ -34,6 +43,17 @@ namespace CubeArena.Shared
         private bool _jumpRequested; // server-side: set by JumpServerRpc, consumed next tick
         private float _predictedVerticalVelocity; // owner-client-side: local jump/gravity prediction
         private bool _predictedJumpRequested; // owner-client-side: consumed in PredictAndReconcile
+        private bool _crouchHeld; // owner-client-side: last-sent state, for change detection
+
+        // Purely cosmetic (client-only — see AnimateVisuals): the swingable limb joints
+        // and walk-cycle state.
+        private Transform _visual;
+        private Transform _armLeftPivot;
+        private Transform _armRightPivot;
+        private Transform _legLeftPivot;
+        private Transform _legRightPivot;
+        private Vector3 _lastVisualPosition;
+        private float _walkCyclePhase;
 
         public int SlotIndex => _slotIndex.Value;
 
@@ -41,6 +61,17 @@ namespace CubeArena.Shared
         {
             _characterController = GetComponent<CharacterController>();
             _renderers = GetComponentsInChildren<Renderer>();
+
+            _visual = transform.Find("Visual");
+            if (_visual != null)
+            {
+                _armLeftPivot = _visual.Find("ArmLeft");
+                _armRightPivot = _visual.Find("ArmRight");
+                _legLeftPivot = _visual.Find("LegLeft");
+                _legRightPivot = _visual.Find("LegRight");
+            }
+
+            _lastVisualPosition = transform.position;
         }
 
         public override void OnNetworkSpawn()
@@ -80,6 +111,11 @@ namespace CubeArena.Shared
                 // Remote players: simple interpolation toward the authoritative position.
                 transform.position = Vector3.Lerp(transform.position, _serverPosition.Value, Time.deltaTime * 10f);
             }
+
+            if (!IsServer)
+            {
+                AnimateVisuals();
+            }
         }
 
         private void FixedUpdate()
@@ -108,6 +144,13 @@ namespace CubeArena.Shared
                 {
                     _predictedJumpRequested = true; // consumed locally in PredictAndReconcile
                     JumpServerRpc();
+                }
+
+                var crouching = keyboard.leftCtrlKey.isPressed;
+                if (crouching != _crouchHeld)
+                {
+                    _crouchHeld = crouching;
+                    SetCrouchServerRpc(crouching);
                 }
             }
 
@@ -157,6 +200,9 @@ namespace CubeArena.Shared
         // something as immediate as a jump.
         private void PredictAndReconcile()
         {
+            ApplyCrouchToController(_isCrouching.Value);
+            var speedMultiplier = _isCrouching.Value ? MovementConstants.CrouchSpeedMultiplier : 1f;
+
             var grounded = _characterController.isGrounded;
             if (_predictedJumpRequested && grounded)
             {
@@ -175,7 +221,7 @@ namespace CubeArena.Shared
                 _predictedVerticalVelocity += MovementConstants.Gravity * Time.deltaTime;
             }
 
-            var move = new Vector3(_lastSentInput.x, 0, _lastSentInput.y) * (MovementConstants.MoveSpeed * Time.deltaTime)
+            var move = new Vector3(_lastSentInput.x, 0, _lastSentInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * Time.deltaTime)
                        + Vector3.up * (_predictedVerticalVelocity * Time.deltaTime);
             _characterController.Move(move);
 
@@ -209,8 +255,17 @@ namespace CubeArena.Shared
             _jumpRequested = true;
         }
 
+        [ServerRpc]
+        private void SetCrouchServerRpc(bool crouching)
+        {
+            _isCrouching.Value = crouching;
+        }
+
         private void SimulateMovement(float deltaTime)
         {
+            ApplyCrouchToController(_isCrouching.Value);
+            var speedMultiplier = _isCrouching.Value ? MovementConstants.CrouchSpeedMultiplier : 1f;
+
             var grounded = _characterController.isGrounded;
 
             // _jumpRequested is only cleared once it's actually consumed below, not
@@ -236,10 +291,27 @@ namespace CubeArena.Shared
                 _verticalVelocity += MovementConstants.Gravity * deltaTime;
             }
 
-            var move = new Vector3(_currentInput.x, 0, _currentInput.y) * (MovementConstants.MoveSpeed * deltaTime)
+            var move = new Vector3(_currentInput.x, 0, _currentInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * deltaTime)
                        + Vector3.up * (_verticalVelocity * deltaTime);
             _characterController.Move(move);
             _serverPosition.Value = transform.position;
+        }
+
+        // Resizes the CharacterController itself for a crouch (so it can, e.g., fit under
+        // something a standing player couldn't) — called from both SimulateMovement and
+        // PredictAndReconcile since both are the two places that actually call Move() and
+        // therefore care about the collider's real dimensions. Purely visual crouch
+        // (squashing the model) is separate — see AnimateVisuals.
+        private void ApplyCrouchToController(bool crouching)
+        {
+            var targetHeight = crouching ? CrouchControllerHeight : StandingControllerHeight;
+            if (Mathf.Approximately(_characterController.height, targetHeight))
+            {
+                return;
+            }
+
+            _characterController.height = targetHeight;
+            _characterController.center = new Vector3(0, targetHeight / 2f, 0);
         }
 
         private void ApplyColor(int slotIndex)
@@ -249,6 +321,53 @@ namespace CubeArena.Shared
             {
                 renderer.material.color = color;
             }
+        }
+
+        // Purely cosmetic, client-side only (the server never renders — see Update's
+        // !IsServer guard). Walk-cycle limb swing is driven by actual horizontal
+        // movement, which works identically for the owner's predicted position and
+        // remote players' interpolated one without needing any extra networked state.
+        // Crouch squashes the whole Visual wrapper — see CreateTemplate's comment on why
+        // it's a separate transform from the CharacterController's own collision shape.
+        private void AnimateVisuals()
+        {
+            if (_visual == null)
+            {
+                return;
+            }
+
+            var delta = transform.position - _lastVisualPosition;
+            _lastVisualPosition = transform.position;
+            delta.y = 0f;
+            var horizontalSpeed = Time.deltaTime > 0f ? delta.magnitude / Time.deltaTime : 0f;
+            var isWalking = horizontalSpeed > 0.15f;
+
+            if (isWalking)
+            {
+                _walkCyclePhase += horizontalSpeed * WalkSwingSpeed * Time.deltaTime;
+            }
+
+            var swing = isWalking ? Mathf.Sin(_walkCyclePhase) * MaxSwingAngleDeg : 0f;
+            SetLimbSwing(_legLeftPivot, swing);
+            SetLimbSwing(_legRightPivot, -swing);
+            SetLimbSwing(_armLeftPivot, -swing);
+            SetLimbSwing(_armRightPivot, swing);
+
+            var targetScaleY = _isCrouching.Value ? CrouchVisualScaleY : 1f;
+            var scale = _visual.localScale;
+            scale.y = Mathf.Lerp(scale.y, targetScaleY, Time.deltaTime * PoseLerpSpeed);
+            _visual.localScale = scale;
+        }
+
+        private static void SetLimbSwing(Transform pivot, float targetAngleDeg)
+        {
+            if (pivot == null)
+            {
+                return;
+            }
+
+            pivot.localRotation = Quaternion.Slerp(
+                pivot.localRotation, Quaternion.Euler(targetAngleDeg, 0, 0), Time.deltaTime * PoseLerpSpeed);
         }
 
         // This template is built 100% at runtime (CLAUDE.md forbids hand-edited prefab
@@ -294,19 +413,29 @@ namespace CubeArena.Shared
             GlobalObjectIdHashField.SetValue(networkObject, PlayerTemplateGlobalObjectIdHash);
 
             var controller = root.AddComponent<CharacterController>();
-            controller.height = 1.9f;
+            controller.height = StandingControllerHeight;
             controller.radius = 0.35f;
-            controller.center = new Vector3(0, 0.95f, 0);
+            controller.center = new Vector3(0, StandingControllerHeight / 2f, 0);
+
+            // All visible geometry lives under "Visual" so a crouch can squash just this
+            // wrapper (AnimateVisuals scales it on Y) without touching the
+            // CharacterController's own collision shape, which ApplyCrouchToController
+            // resizes directly and separately.
+            var visual = new GameObject("Visual");
+            visual.transform.SetParent(root.transform, false);
 
             // Blocky humanoid (torso/head/arms/legs) instead of a plain 2-cube stack —
             // still built entirely from Cube primitives (CLAUDE.md: no mesh/prefab
             // assets), just with human-like proportions instead of a "totem pole" look.
-            CreateBodyPart(root.transform, "Torso", new Vector3(0, 1.25f, 0), new Vector3(0.5f, 0.7f, 0.3f));
-            CreateBodyPart(root.transform, "Head", new Vector3(0, 1.775f, 0), new Vector3(0.35f, 0.35f, 0.35f));
-            CreateBodyPart(root.transform, "ArmLeft", new Vector3(-0.45f, 1.25f, 0), new Vector3(0.2f, 0.65f, 0.2f));
-            CreateBodyPart(root.transform, "ArmRight", new Vector3(0.45f, 1.25f, 0), new Vector3(0.2f, 0.65f, 0.2f));
-            CreateBodyPart(root.transform, "LegLeft", new Vector3(-0.15f, 0.45f, 0), new Vector3(0.25f, 0.9f, 0.25f));
-            CreateBodyPart(root.transform, "LegRight", new Vector3(0.15f, 0.45f, 0), new Vector3(0.25f, 0.9f, 0.25f));
+            // Arms/legs are a pivot-at-the-joint + a cube hanging from it (CreateLimb),
+            // so AnimateVisuals' walk-cycle swing rotates them naturally from the
+            // shoulder/hip instead of spinning the cube around its own center.
+            CreateBodyPart(visual.transform, "Torso", new Vector3(0, 1.25f, 0), new Vector3(0.5f, 0.7f, 0.3f));
+            CreateBodyPart(visual.transform, "Head", new Vector3(0, 1.775f, 0), new Vector3(0.35f, 0.35f, 0.35f));
+            CreateLimb(visual.transform, "ArmLeft", new Vector3(-0.45f, 1.575f, 0), new Vector3(0.2f, 0.65f, 0.2f));
+            CreateLimb(visual.transform, "ArmRight", new Vector3(0.45f, 1.575f, 0), new Vector3(0.2f, 0.65f, 0.2f));
+            CreateLimb(visual.transform, "LegLeft", new Vector3(-0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
+            CreateLimb(visual.transform, "LegRight", new Vector3(0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
 
             root.AddComponent<PlayerController>();
             return root;
@@ -323,6 +452,25 @@ namespace CubeArena.Shared
             // colliders would just fight it, so they're removed like Body/Head were before.
             UnityEngine.Object.Destroy(part.GetComponent<Collider>());
             MaterialUtil.ApplyLitColor(part.GetComponent<Renderer>(), Color.white);
+        }
+
+        // A pivot at the joint (shoulder/hip) with the visible cube hanging down from
+        // it — rotating the returned pivot swings the limb from the joint instead of
+        // spinning the cube around its own center. The pivot keeps the limb's name
+        // (e.g. "ArmLeft") so Awake's transform.Find calls still resolve it directly.
+        private static void CreateLimb(Transform parent, string name, Vector3 pivotLocalPosition, Vector3 size)
+        {
+            var pivot = new GameObject(name);
+            pivot.transform.SetParent(parent, false);
+            pivot.transform.localPosition = pivotLocalPosition;
+
+            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cube.name = name + "Cube";
+            cube.transform.SetParent(pivot.transform, false);
+            cube.transform.localPosition = new Vector3(0, -size.y / 2f, 0);
+            cube.transform.localScale = size;
+            UnityEngine.Object.Destroy(cube.GetComponent<Collider>());
+            MaterialUtil.ApplyLitColor(cube.GetComponent<Renderer>(), Color.white);
         }
     }
 }

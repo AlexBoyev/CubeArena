@@ -17,6 +17,8 @@ namespace CubeArena.Client
     {
         private const string OnlineBackendUrlPrefKey = "BackendUrl_Online";
         private const string LanBackendUrlPrefKey = "BackendUrl_Lan";
+        private const string RememberMePrefKey = "RememberMe";
+        private const string RememberedEmailPrefKey = "RememberedEmail";
 
         private ClientConfig _config;
         private AuthClient _auth;
@@ -40,6 +42,7 @@ namespace CubeArena.Client
         private InputField _emailField;
         private InputField _passwordField;
         private InputField _displayNameField;
+        private Toggle _rememberMeToggle;
         private bool _isLanMode;
         private GameObject _currentPanel;
         private readonly Stack<GameObject> _panelHistory = new();
@@ -183,28 +186,30 @@ namespace CubeArena.Client
 
         private void BuildLoginPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 420));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 480));
             _loginPanel = panelRect.gameObject;
             UiFactory.CreateText(panelRect, "Cube Arena", 28, new Vector2(0, 165), new Vector2(300, 40));
 
             // Editable so the same client build can point at a cloud-hosted backend or
             // a LAN host's local IP without rebuilding. Pre-filled by OnStartOnlineClicked
             // /OnStartLanClicked depending on which Start Game sub-menu option was picked;
-            // whatever's typed is remembered per-mode for next launch (EnsureClientsForServerField).
+            // whatever's typed is remembered — along with the email below — only if
+            // "Remember me" is checked (see ApplyRememberedLoginFields/SaveRememberedLoginFields).
             _serverField = UiFactory.CreateInputField(panelRect, "server address", new Vector2(0, 110));
 
             _emailField = UiFactory.CreateInputField(panelRect, "email", new Vector2(0, 55));
             _passwordField = UiFactory.CreateInputField(panelRect, "password", new Vector2(0, 5), isPassword: true);
             panelRect.gameObject.AddComponent<TabNavigation>().SetFields(_serverField, _emailField, _passwordField);
-            UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -50), OnRegisterClicked);
-            UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -50), OnLoginClicked);
-            _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -115), new Vector2(340, 50));
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -180), OnBackClicked, new Vector2(120, 36));
+            _rememberMeToggle = UiFactory.CreateToggle(panelRect, "Remember me", new Vector2(0, -35));
+            UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -85), OnRegisterClicked);
+            UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -85), OnLoginClicked);
+            _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -150), new Vector2(340, 50));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -215), OnBackClicked, new Vector2(120, 36));
         }
 
         // (Re)creates the auth/session clients if the server-address field has changed
-        // since the last call, and remembers the value for next launch (separately per
-        // Online/LAN mode, so picking one doesn't clobber the other's last-used address).
+        // since the last call. Persisting it for next launch happens separately, only if
+        // "Remember me" is checked — see SaveRememberedLoginFields.
         private void EnsureClientsForServerField()
         {
             var url = string.IsNullOrWhiteSpace(_serverField.text) ? _config.BackendUrl : _serverField.text.Trim();
@@ -216,7 +221,6 @@ namespace CubeArena.Client
             _currentBackendUrl = url;
             _auth = new AuthClient(url);
             _session = new SessionClient(url);
-            PlayerPrefs.SetString(_isLanMode ? LanBackendUrlPrefKey : OnlineBackendUrlPrefKey, url);
         }
 
         private void BuildCharacterSelectPanel()
@@ -291,7 +295,7 @@ namespace CubeArena.Client
         private void OnStartOnlineClicked()
         {
             _isLanMode = false;
-            _serverField.text = PlayerPrefs.GetString(OnlineBackendUrlPrefKey, _config.BackendUrl);
+            ApplyRememberedLoginFields(OnlineBackendUrlPrefKey, _config.BackendUrl);
             ((Text)_serverField.placeholder).text = "server address";
             NavigateTo(_loginPanel);
         }
@@ -299,11 +303,39 @@ namespace CubeArena.Client
         private void OnStartLanClicked()
         {
             _isLanMode = true;
-            _serverField.text = PlayerPrefs.GetString(LanBackendUrlPrefKey, "");
+            ApplyRememberedLoginFields(LanBackendUrlPrefKey, "");
             // Full example (http://192.168.1.20:8080) doesn't fit the 300px-wide field
             // without wrapping past its visible height, hence the short placeholder.
             ((Text)_serverField.placeholder).text = "LAN host address";
-            ShowOnly(_loginPanel);
+            NavigateTo(_loginPanel);
+        }
+
+        // "Remember me" gates both the email and the server address together — if it was
+        // unchecked last time (or never checked), both fields start blank/default instead
+        // of silently carrying over from a previous session.
+        private void ApplyRememberedLoginFields(string hostPrefKey, string defaultHost)
+        {
+            var remember = PlayerPrefs.GetInt(RememberMePrefKey, 0) == 1;
+            _rememberMeToggle.isOn = remember;
+            _serverField.text = remember ? PlayerPrefs.GetString(hostPrefKey, defaultHost) : defaultHost;
+            _emailField.text = remember ? PlayerPrefs.GetString(RememberedEmailPrefKey, "") : "";
+        }
+
+        private void SaveRememberedLoginFields()
+        {
+            var remember = _rememberMeToggle.isOn;
+            PlayerPrefs.SetInt(RememberMePrefKey, remember ? 1 : 0);
+            if (remember)
+            {
+                PlayerPrefs.SetString(RememberedEmailPrefKey, _emailField.text);
+                PlayerPrefs.SetString(_isLanMode ? LanBackendUrlPrefKey : OnlineBackendUrlPrefKey, _currentBackendUrl);
+            }
+            else
+            {
+                PlayerPrefs.DeleteKey(RememberedEmailPrefKey);
+                PlayerPrefs.DeleteKey(OnlineBackendUrlPrefKey);
+                PlayerPrefs.DeleteKey(LanBackendUrlPrefKey);
+            }
         }
 
         private void OnOptionsClicked() => NavigateTo(_optionsPanel);
@@ -336,6 +368,7 @@ namespace CubeArena.Client
             var (success, error) = await _auth.LoginAsync(_emailField.text, _passwordField.text);
             if (success)
             {
+                SaveRememberedLoginFields();
                 NavigateTo(_characterSelectPanel);
             }
             else
