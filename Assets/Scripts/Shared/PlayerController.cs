@@ -35,9 +35,17 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<bool> _isCrouching = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        // Degrees around Y — the character always faces wherever CameraFollow's
+        // mouse-look currently points (see ReadAndSendInput/CameraRelativeXZ), same
+        // convention as most third-person games (WASD is relative to facing, and
+        // facing is the camera's own yaw).
+        private readonly NetworkVariable<float> _facingYaw = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
         private CharacterController _characterController;
         private Renderer[] _renderers;
         private Vector2 _lastSentInput;
+        private float _lastSentYaw;
         private Vector2 _currentInput; // server-side: latest input received from the owner
         private float _verticalVelocity; // server-side: jump/gravity state
         private bool _jumpRequested; // server-side: set by JumpServerRpc, consumed next tick
@@ -108,8 +116,9 @@ namespace CubeArena.Shared
             }
             else if (!IsServer)
             {
-                // Remote players: simple interpolation toward the authoritative position.
+                // Remote players: simple interpolation toward the authoritative position/facing.
                 transform.position = Vector3.Lerp(transform.position, _serverPosition.Value, Time.deltaTime * 10f);
+                transform.rotation = Quaternion.Slerp(transform.rotation, Quaternion.Euler(0, _facingYaw.Value, 0), Time.deltaTime * 10f);
             }
 
             if (!IsServer)
@@ -163,10 +172,19 @@ namespace CubeArena.Shared
             // change-detection below sends far more often while turning-and-moving at once
             // — acceptable bandwidth for this prototype's scale.
             var worldInput = CameraRelativeXZ(input);
-            if (worldInput != _lastSentInput)
+
+            // The model itself never rotated before this — only the camera orbited
+            // around a fixed-facing character, which looked like the world spun around
+            // them rather than them turning. Facing always tracks the camera's yaw (not
+            // just while moving), same convention as most third-person games.
+            var facingYaw = Camera.main != null ? Camera.main.transform.eulerAngles.y : transform.eulerAngles.y;
+            transform.rotation = Quaternion.Euler(0, facingYaw, 0); // instant local prediction — it's just mirroring our own camera, no reconciliation needed
+
+            if (worldInput != _lastSentInput || !Mathf.Approximately(facingYaw, _lastSentYaw))
             {
                 _lastSentInput = worldInput;
-                SubmitInputServerRpc(worldInput);
+                _lastSentYaw = facingYaw;
+                SubmitInputServerRpc(worldInput, facingYaw);
             }
         }
 
@@ -238,7 +256,7 @@ namespace CubeArena.Shared
         }
 
         [ServerRpc]
-        private void SubmitInputServerRpc(Vector2 input)
+        private void SubmitInputServerRpc(Vector2 input, float facingYaw)
         {
             // Reject/clamp inputs whose implied speed exceeds the allowed maximum (section 3.3).
             if (input.sqrMagnitude > 1.001f)
@@ -247,6 +265,8 @@ namespace CubeArena.Shared
             }
 
             _currentInput = input;
+            _facingYaw.Value = facingYaw;
+            transform.rotation = Quaternion.Euler(0, facingYaw, 0);
         }
 
         [ServerRpc]
