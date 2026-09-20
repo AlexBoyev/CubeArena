@@ -13,9 +13,12 @@ namespace CubeArena.Client
     // UiFactory.cs and CLAUDE.md's rule against hand-editing scenes/prefabs.
     public class ClientBootstrap : MonoBehaviour
     {
+        private const string BackendUrlPrefKey = "BackendUrl";
+
         private ClientConfig _config;
         private AuthClient _auth;
         private SessionClient _session;
+        private string _currentBackendUrl;
 
         private Canvas _canvas;
         private GameObject _loginPanel;
@@ -26,6 +29,7 @@ namespace CubeArena.Client
         private Text _loginStatus;
         private Text _selectStatus;
         private Text _hudText;
+        private InputField _serverField;
         private InputField _emailField;
         private InputField _passwordField;
         private InputField _displayNameField;
@@ -43,8 +47,6 @@ namespace CubeArena.Client
         private void Start()
         {
             _config = ClientConfig.FromEnvironment();
-            _auth = new AuthClient(_config.BackendUrl);
-            _session = new SessionClient(_config.BackendUrl);
 
             ArenaBuilder.Build();
             BuildUi();
@@ -56,6 +58,11 @@ namespace CubeArena.Client
 
             if (_config.AutoTestEnabled)
             {
+                // Auto-test always targets CUBEARENA_BACKEND_URL directly, bypassing
+                // whatever's typed into the server-address field.
+                _currentBackendUrl = _config.BackendUrl;
+                _auth = new AuthClient(_currentBackendUrl);
+                _session = new SessionClient(_currentBackendUrl);
                 _ = RunAutoTestAsync();
             }
         }
@@ -89,14 +96,37 @@ namespace CubeArena.Client
 
         private void BuildLoginPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 320));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 380));
             _loginPanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "Cube Arena", 28, new Vector2(0, 120), new Vector2(300, 40));
-            _emailField = UiFactory.CreateInputField(panelRect, "email", new Vector2(0, 50));
-            _passwordField = UiFactory.CreateInputField(panelRect, "password", new Vector2(0, 0), isPassword: true);
-            UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -55), OnRegisterClicked);
-            UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -55), OnLoginClicked);
-            _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -110), new Vector2(340, 40));
+            UiFactory.CreateText(panelRect, "Cube Arena", 28, new Vector2(0, 150), new Vector2(300, 40));
+
+            // Editable so the same client build can point at a cloud-hosted backend or
+            // a LAN host's local IP without rebuilding — CUBEARENA_BACKEND_URL only sets
+            // the initial value here, and whatever's typed is remembered for next launch.
+            _serverField = UiFactory.CreateInputField(panelRect, "server address", new Vector2(0, 95));
+            _serverField.text = PlayerPrefs.GetString(BackendUrlPrefKey, _config.BackendUrl);
+
+            _emailField = UiFactory.CreateInputField(panelRect, "email", new Vector2(0, 40));
+            _passwordField = UiFactory.CreateInputField(panelRect, "password", new Vector2(0, -10), isPassword: true);
+            UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -65), OnRegisterClicked);
+            UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -65), OnLoginClicked);
+            _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -130), new Vector2(340, 50));
+        }
+
+        // (Re)creates the auth/session clients if the server-address field has changed
+        // since the last call, and remembers the value for next launch.
+        private void EnsureClientsForServerField()
+        {
+            var url = string.IsNullOrWhiteSpace(_serverField.text) ? _config.BackendUrl : _serverField.text.Trim();
+            if (_auth != null && _currentBackendUrl == url)
+            {
+                return;
+            }
+
+            _currentBackendUrl = url;
+            _auth = new AuthClient(url);
+            _session = new SessionClient(url);
+            PlayerPrefs.SetString(BackendUrlPrefKey, url);
         }
 
         private void BuildCharacterSelectPanel()
@@ -140,6 +170,7 @@ namespace CubeArena.Client
 
         private async void OnRegisterClicked()
         {
+            EnsureClientsForServerField();
             _loginStatus.text = "Registering...";
             var (success, error) = await _auth.RegisterAsync(_emailField.text, _passwordField.text);
             _loginStatus.text = success ? "Registered — now log in." : $"Register failed: {error}";
@@ -147,6 +178,7 @@ namespace CubeArena.Client
 
         private async void OnLoginClicked()
         {
+            EnsureClientsForServerField();
             _loginStatus.text = "Logging in...";
             var (success, error) = await _auth.LoginAsync(_emailField.text, _passwordField.text);
             if (success)
