@@ -496,6 +496,22 @@ namespace CubeArena.Client
 
             _hudText.text = $"Slot {player.SlotIndex}";
             _hudText.color = PlayerColors.Get(player.SlotIndex);
+
+            // Chosen at Character Select but never sent anywhere before now — see
+            // PlayerController.SubmitDisplayName. FixedString32Bytes can hold at most 29
+            // UTF-8 bytes (32 minus its own length header), so this is trimmed well under
+            // that even for names full of multi-byte characters.
+            var displayName = _displayNameField.text?.Trim();
+            if (string.IsNullOrEmpty(displayName))
+            {
+                displayName = $"Slot {player.SlotIndex}";
+            }
+            else if (displayName.Length > 16)
+            {
+                displayName = displayName[..16];
+            }
+
+            player.SubmitDisplayName(displayName);
             ShowOnly(_hudPanel);
 
             // Locked while playing so mouse movement drives CameraFollow's look instead

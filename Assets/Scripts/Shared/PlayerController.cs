@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 namespace CubeArena.Shared
 {
@@ -45,6 +47,9 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<int> _score = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        private readonly NetworkVariable<FixedString32Bytes> _displayName = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
         // Degrees around Y — the character always faces wherever CameraFollow's
         // mouse-look currently points (see ReadAndSendInput/CameraRelativeXZ), same
         // convention as most third-person games (WASD is relative to facing, and
@@ -73,6 +78,11 @@ namespace CubeArena.Shared
         private Vector3 _lastVisualPosition;
         private float _walkCyclePhase;
 
+        // Nameplate: a sibling of Visual (not a child of it) so it doesn't shrink/move
+        // with the crouch squash — see CreateTemplate.
+        private Transform _nameplate;
+        private Text _nameplateText;
+
         public int SlotIndex => _slotIndex.Value;
         public int Score => _score.Value;
 
@@ -90,6 +100,9 @@ namespace CubeArena.Shared
                 _legRightPivot = _visual.Find("LegRight");
             }
 
+            _nameplate = transform.Find("Nameplate");
+            _nameplateText = _nameplate != null ? _nameplate.GetComponentInChildren<Text>() : null;
+
             _lastVisualPosition = transform.position;
         }
 
@@ -97,6 +110,9 @@ namespace CubeArena.Shared
         {
             ApplyColor(_slotIndex.Value);
             _slotIndex.OnValueChanged += (_, newValue) => ApplyColor(newValue);
+
+            ApplyDisplayName(_displayName.Value);
+            _displayName.OnValueChanged += (_, newValue) => ApplyDisplayName(newValue);
 
             if (IsServer)
             {
@@ -132,6 +148,26 @@ namespace CubeArena.Shared
         public void ResetScore()
         {
             _score.Value = 0;
+        }
+
+        // Owner-client-side: called by ClientBootstrap once, right after this player's
+        // own object spawns, to publish the name chosen at Character Select — nothing
+        // sends it anywhere before that (see docs/ROADMAP.md's Phase 5 notes on
+        // DisplayName previously being purely cosmetic/local).
+        public void SubmitDisplayName(string name) => SetDisplayNameServerRpc(name);
+
+        [ServerRpc]
+        private void SetDisplayNameServerRpc(FixedString32Bytes name)
+        {
+            _displayName.Value = name;
+        }
+
+        private void ApplyDisplayName(FixedString32Bytes displayName)
+        {
+            if (_nameplateText != null)
+            {
+                _nameplateText.text = displayName.ToString();
+            }
         }
 
         // Server-only: called by ServerBootstrap's spawn logic, before the object is
@@ -413,6 +449,13 @@ namespace CubeArena.Shared
             var scale = _visual.localScale;
             scale.y = Mathf.Lerp(scale.y, targetScaleY, Time.deltaTime * PoseLerpSpeed);
             _visual.localScale = scale;
+
+            // Billboard: always face the viewer, same as most games' nameplates — a
+            // World Space Canvas doesn't do this on its own.
+            if (_nameplate != null && Camera.main != null)
+            {
+                _nameplate.rotation = Camera.main.transform.rotation;
+            }
         }
 
         private static void SetLimbSwing(Transform pivot, float targetAngleDeg)
@@ -493,8 +536,43 @@ namespace CubeArena.Shared
             CreateLimb(visual.transform, "LegLeft", new Vector3(-0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
             CreateLimb(visual.transform, "LegRight", new Vector3(0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
 
+            CreateNameplate(root.transform);
+
             root.AddComponent<PlayerController>();
             return root;
+        }
+
+        // A sibling of Visual, not a child of it, so the crouch squash (AnimateVisuals
+        // scales Visual on Y) doesn't shrink or drop the nameplate — it stays at a fixed
+        // height above the standing model either way. World Space Canvas doesn't
+        // auto-face the camera, so AnimateVisuals rotates it manually each frame.
+        private static void CreateNameplate(Transform parent)
+        {
+            var nameplateGo = new GameObject("Nameplate", typeof(Canvas));
+            nameplateGo.transform.SetParent(parent, false);
+            nameplateGo.transform.localPosition = new Vector3(0, 2.3f, 0);
+            nameplateGo.transform.localScale = Vector3.one * 0.01f; // world-space canvas units -> ~2m-wide plate
+
+            var canvas = nameplateGo.GetComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            var canvasRect = nameplateGo.GetComponent<RectTransform>();
+            canvasRect.sizeDelta = new Vector2(220, 50);
+
+            var textGo = new GameObject("NameplateText", typeof(Text));
+            textGo.transform.SetParent(nameplateGo.transform, false);
+            var textRect = textGo.GetComponent<RectTransform>();
+            textRect.anchorMin = Vector2.zero;
+            textRect.anchorMax = Vector2.one;
+            textRect.offsetMin = Vector2.zero;
+            textRect.offsetMax = Vector2.zero;
+
+            var text = textGo.GetComponent<Text>();
+            text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            text.fontSize = 30;
+            text.alignment = TextAnchor.MiddleCenter;
+            text.color = Color.white;
+            text.horizontalOverflow = HorizontalWrapMode.Overflow;
+            text.verticalOverflow = VerticalWrapMode.Overflow;
         }
 
         private static void CreateBodyPart(Transform parent, string name, Vector3 localPosition, Vector3 localScale)

@@ -49,17 +49,86 @@ namespace CubeArena.Shared
                 MaterialUtil.ApplyLitColor(obstacle.GetComponent<Renderer>(), new Color(0.55f, 0.4f, 0.25f));
             }
 
+            // Course pieces that actually require the crouch/jump mechanics rather than
+            // just blocking a path — placed in the open ring between the fixed obstacles
+            // above and the walls, clear of both spawn points and each other.
+            BuildCrouchTunnel(root.transform, new Vector3(0f, 0f, 0f));
+            BuildClimbableTower(root.transform, new Vector3(6f, 0f, -14f));
+            BuildJumpGap(root.transform, new Vector3(-16f, 0f, 6f));
+
             return root;
         }
 
-        private static void BuildWall(Transform parent, string name, Vector3 position, Vector3 scale)
+        private static void BuildWall(Transform parent, string name, Vector3 position, Vector3 scale) =>
+            BuildBlock(parent, name, position, scale, new Color(0.2f, 0.2f, 0.24f));
+
+        private static void BuildBlock(Transform parent, string name, Vector3 position, Vector3 scale, Color color)
         {
-            var wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            wall.name = name;
-            wall.transform.SetParent(parent);
-            wall.transform.position = position;
-            wall.transform.localScale = scale;
-            MaterialUtil.ApplyLitColor(wall.GetComponent<Renderer>(), new Color(0.2f, 0.2f, 0.24f));
+            var block = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            block.name = name;
+            block.transform.SetParent(parent);
+            block.transform.position = position;
+            block.transform.localScale = scale;
+            MaterialUtil.ApplyLitColor(block.GetComponent<Renderer>(), color);
+        }
+
+        // A low roof over a short corridor: clears a crouching player
+        // (PlayerController.CrouchControllerHeight, ~1.1m) but blocks a standing one
+        // (StandingControllerHeight, ~1.9m) — walking through means crouching through.
+        private static void BuildCrouchTunnel(Transform parent, Vector3 center)
+        {
+            const float halfWidth = 1.5f;
+            const float halfLength = 3f;
+            const float wallThickness = 0.5f;
+            const float wallHeight = 3f;
+            const float roofClearance = 1.35f;
+            const float roofThickness = 0.4f;
+            var color = new Color(0.35f, 0.3f, 0.3f);
+
+            BuildBlock(parent, "Tunnel_WallLeft",
+                center + new Vector3(-halfWidth - wallThickness / 2f, wallHeight / 2f, 0f),
+                new Vector3(wallThickness, wallHeight, halfLength * 2f), color);
+            BuildBlock(parent, "Tunnel_WallRight",
+                center + new Vector3(halfWidth + wallThickness / 2f, wallHeight / 2f, 0f),
+                new Vector3(wallThickness, wallHeight, halfLength * 2f), color);
+            BuildBlock(parent, "Tunnel_Roof",
+                center + new Vector3(0f, roofClearance + roofThickness / 2f, 0f),
+                new Vector3(halfWidth * 2f + wallThickness * 2f, roofThickness, halfLength * 2f), color);
+        }
+
+        // Three ascending steps (~0.75m each — comfortably under a jump's ~1.1m apex),
+        // forming a small climbable "building": jump from the ground onto step 0, then
+        // step to step up to the top.
+        private static void BuildClimbableTower(Transform parent, Vector3 basePosition)
+        {
+            const float stepHeight = 0.75f;
+            const float stepDepth = 2.2f;
+            const float stepWidth = 4f;
+            var color = new Color(0.45f, 0.45f, 0.5f);
+
+            for (var i = 0; i < 3; i++)
+            {
+                var height = stepHeight * (i + 1);
+                var position = basePosition + new Vector3(0f, height / 2f, i * stepDepth);
+                BuildBlock(parent, $"Tower_Step{i}", position, new Vector3(stepWidth, height, stepDepth), color);
+            }
+        }
+
+        // Two low platforms with a gap wide enough that only a jump clears it, not just
+        // walking.
+        private static void BuildJumpGap(Transform parent, Vector3 basePosition)
+        {
+            const float platformHeight = 0.6f;
+            const float platformSize = 3f;
+            const float gap = 2.5f;
+            var color = new Color(0.3f, 0.45f, 0.4f);
+
+            BuildBlock(parent, "JumpGap_PlatformA",
+                basePosition + new Vector3(0f, platformHeight / 2f, 0f),
+                new Vector3(platformSize, platformHeight, platformSize), color);
+            BuildBlock(parent, "JumpGap_PlatformB",
+                basePosition + new Vector3(platformSize + gap, platformHeight / 2f, 0f),
+                new Vector3(platformSize, platformHeight, platformSize), color);
         }
     }
 }
