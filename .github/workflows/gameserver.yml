@@ -2,6 +2,9 @@ name: Game Server
 
 # Requires UNITY_LICENSE (and UNITY_EMAIL/UNITY_PASSWORD, or UNITY_SERIAL for Pro)
 # repo secrets before this can actually run — see game-ci.org/docs/github/activation.
+# Until then, the job below skips itself (rather than failing) so this
+# workflow doesn't sit permanently red on a check nobody can fix without
+# those secrets.
 
 on:
   push:
@@ -26,6 +29,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Skip (not fail) until UNITY_LICENSE/UNITY_SERIAL is added as a repo
+    # secret — see the header comment above. Keeps this check from showing
+    # a permanent, non-actionable red X before that secret exists.
+    if: ${{ secrets.UNITY_LICENSE != '' || secrets.UNITY_SERIAL != '' }}
     steps:
       - uses: actions/checkout@v4
         with:

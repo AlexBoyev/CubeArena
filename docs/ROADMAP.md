@@ -99,7 +99,10 @@ needs:
 3. `UNITY_LICENSE` (+ `UNITY_EMAIL`/`UNITY_PASSWORD`, or `UNITY_SERIAL` for
    Pro) added as GitHub repo secrets, so `gameserver.yml` can actually build
    the real Linux server in CI — see the workflow's header comment and
-   game-ci.org/docs/github/activation.
+   game-ci.org/docs/github/activation. Until that secret exists,
+   `gameserver.yml`'s job skips itself (`if: secrets.UNITY_LICENSE != '' ||
+   secrets.UNITY_SERIAL != ''`) instead of failing, so it doesn't sit
+   permanently red on a check nobody can act on yet.
 
 Once you have those three things, `docs/HOSTING.md`'s tier 2 section is a
 literal, copy-pasteable runbook for the rest.
