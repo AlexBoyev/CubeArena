@@ -13,7 +13,8 @@ namespace CubeArena.Client
     // UiFactory.cs and CLAUDE.md's rule against hand-editing scenes/prefabs.
     public class ClientBootstrap : MonoBehaviour
     {
-        private const string BackendUrlPrefKey = "BackendUrl";
+        private const string OnlineBackendUrlPrefKey = "BackendUrl_Online";
+        private const string LanBackendUrlPrefKey = "BackendUrl_Lan";
 
         private ClientConfig _config;
         private AuthClient _auth;
@@ -22,6 +23,7 @@ namespace CubeArena.Client
 
         private Canvas _canvas;
         private GameObject _mainMenuPanel;
+        private GameObject _startGamePanel;
         private GameObject _optionsPanel;
         private GameObject _aboutPanel;
         private GameObject _loginPanel;
@@ -36,6 +38,7 @@ namespace CubeArena.Client
         private InputField _emailField;
         private InputField _passwordField;
         private InputField _displayNameField;
+        private bool _isLanMode;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoBootstrap()
@@ -91,6 +94,7 @@ namespace CubeArena.Client
         {
             _canvas = UiFactory.CreateCanvas();
             BuildMainMenuPanel();
+            BuildStartGamePanel();
             BuildOptionsPanel();
             BuildAboutPanel();
             BuildLoginPanel();
@@ -107,10 +111,27 @@ namespace CubeArena.Client
             UiFactory.CreateText(panelRect, "Cube Arena", 32, new Vector2(0, 150), new Vector2(300, 44));
 
             var buttonSize = new Vector2(280, 50);
-            UiFactory.CreateButton(panelRect, "Start Game (Online/LAN)", new Vector2(0, 65), OnStartGameClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "Start Game", new Vector2(0, 65), OnStartGameClicked, buttonSize);
             UiFactory.CreateButton(panelRect, "Options", new Vector2(0, 0), OnOptionsClicked, buttonSize);
             UiFactory.CreateButton(panelRect, "About", new Vector2(0, -65), OnAboutClicked, buttonSize);
             UiFactory.CreateButton(panelRect, "Exit", new Vector2(0, -130), OnExitClicked, buttonSize);
+        }
+
+        // Sub-menu for the two ways to play (section 6 / Tier-0 LAN hosting): Online
+        // targets whatever backend the client is configured with by default, LAN targets
+        // a host's local IP (see Start-CubeArena-Host.bat / docs/HOSTING.md). Both paths
+        // land on the same login panel — the only difference is what's pre-filled into
+        // the server-address field, which stays freely editable either way.
+        private void BuildStartGamePanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(340, 260));
+            _startGamePanel = panelRect.gameObject;
+            UiFactory.CreateText(panelRect, "Start Game", 28, new Vector2(0, 85), new Vector2(300, 40));
+
+            var buttonSize = new Vector2(280, 50);
+            UiFactory.CreateButton(panelRect, "Online", new Vector2(0, 15), OnStartOnlineClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "LAN", new Vector2(0, -45), OnStartLanClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -110), OnBackToMenuClicked, new Vector2(120, 36));
         }
 
         private void BuildOptionsPanel()
@@ -141,13 +162,14 @@ namespace CubeArena.Client
             UiFactory.CreateText(panelRect, "Cube Arena", 28, new Vector2(0, 165), new Vector2(300, 40));
 
             // Editable so the same client build can point at a cloud-hosted backend or
-            // a LAN host's local IP without rebuilding — CUBEARENA_BACKEND_URL only sets
-            // the initial value here, and whatever's typed is remembered for next launch.
+            // a LAN host's local IP without rebuilding. Pre-filled by OnStartOnlineClicked
+            // /OnStartLanClicked depending on which Start Game sub-menu option was picked;
+            // whatever's typed is remembered per-mode for next launch (EnsureClientsForServerField).
             _serverField = UiFactory.CreateInputField(panelRect, "server address", new Vector2(0, 110));
-            _serverField.text = PlayerPrefs.GetString(BackendUrlPrefKey, _config.BackendUrl);
 
             _emailField = UiFactory.CreateInputField(panelRect, "email", new Vector2(0, 55));
             _passwordField = UiFactory.CreateInputField(panelRect, "password", new Vector2(0, 5), isPassword: true);
+            panelRect.gameObject.AddComponent<TabNavigation>().SetFields(_serverField, _emailField, _passwordField);
             UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -50), OnRegisterClicked);
             UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -50), OnLoginClicked);
             _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -115), new Vector2(340, 50));
@@ -155,7 +177,8 @@ namespace CubeArena.Client
         }
 
         // (Re)creates the auth/session clients if the server-address field has changed
-        // since the last call, and remembers the value for next launch.
+        // since the last call, and remembers the value for next launch (separately per
+        // Online/LAN mode, so picking one doesn't clobber the other's last-used address).
         private void EnsureClientsForServerField()
         {
             var url = string.IsNullOrWhiteSpace(_serverField.text) ? _config.BackendUrl : _serverField.text.Trim();
@@ -167,7 +190,7 @@ namespace CubeArena.Client
             _currentBackendUrl = url;
             _auth = new AuthClient(url);
             _session = new SessionClient(url);
-            PlayerPrefs.SetString(BackendUrlPrefKey, url);
+            PlayerPrefs.SetString(_isLanMode ? LanBackendUrlPrefKey : OnlineBackendUrlPrefKey, url);
         }
 
         private void BuildCharacterSelectPanel()
@@ -203,6 +226,7 @@ namespace CubeArena.Client
         private void ShowOnly(GameObject panel)
         {
             _mainMenuPanel.SetActive(panel == _mainMenuPanel);
+            _startGamePanel.SetActive(panel == _startGamePanel);
             _optionsPanel.SetActive(panel == _optionsPanel);
             _aboutPanel.SetActive(panel == _aboutPanel);
             _loginPanel.SetActive(panel == _loginPanel);
@@ -212,7 +236,25 @@ namespace CubeArena.Client
             _minimap.SetActive(panel == _hudPanel);
         }
 
-        private void OnStartGameClicked() => ShowOnly(_loginPanel);
+        private void OnStartGameClicked() => ShowOnly(_startGamePanel);
+
+        private void OnStartOnlineClicked()
+        {
+            _isLanMode = false;
+            _serverField.text = PlayerPrefs.GetString(OnlineBackendUrlPrefKey, _config.BackendUrl);
+            ((Text)_serverField.placeholder).text = "server address";
+            ShowOnly(_loginPanel);
+        }
+
+        private void OnStartLanClicked()
+        {
+            _isLanMode = true;
+            _serverField.text = PlayerPrefs.GetString(LanBackendUrlPrefKey, "");
+            // Full example (http://192.168.1.20:8080) doesn't fit the 300px-wide field
+            // without wrapping past its visible height, hence the short placeholder.
+            ((Text)_serverField.placeholder).text = "LAN host address";
+            ShowOnly(_loginPanel);
+        }
 
         private void OnOptionsClicked() => ShowOnly(_optionsPanel);
 
