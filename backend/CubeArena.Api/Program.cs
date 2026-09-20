@@ -65,6 +65,26 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
+// Tier 0 (docs/HOSTING.md): the API always serves plain HTTP directly — TLS
+// termination, when present, lives in front of it (Caddy/nginx, see tier 2/3).
+// LAN_MODE doesn't change that; it's an explicit, loud acknowledgement that
+// this plain-HTTP endpoint is intentionally reachable beyond localhost, on a
+// trusted network only. See SECURITY.md's "LAN_MODE" section.
+if (builder.Configuration.GetValue("LAN_MODE", false))
+{
+    Console.WriteLine("""
+
+        ================================================================
+         LAN_MODE is ON — serving plain HTTP with no TLS.
+         Passwords, tokens, and connect tickets travel UNENCRYPTED.
+         Only use this on a trusted local network you control (e.g. a
+         LAN party). Never expose this configuration to the public
+         internet. See SECURITY.md's "LAN_MODE" section.
+        ================================================================
+        """);
+    app.Logger.LogWarning("LAN_MODE is enabled: serving plain HTTP, trusted-network-only. See SECURITY.md.");
+}
+
 if (!app.Environment.IsEnvironment("Testing"))
 {
     using var scope = app.Services.CreateScope();

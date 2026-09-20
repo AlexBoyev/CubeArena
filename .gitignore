@@ -44,6 +44,13 @@ bin/
 *.sqlite
 *.sqlite3
 
+# Tier 0 (docs/HOSTING.md): scratch PID/log files from
+# run-gameserver-native.ps1 and local batch-mode builds — never committed.
+/gameserver.pid
+/gameserver_run.log
+/*_build*.log
+/*_build*.pid
+
 # Unity3D generated meta files that shouldn't be ignored are NOT listed here —
 # .meta files ARE tracked, they're essential to Unity project integrity
 

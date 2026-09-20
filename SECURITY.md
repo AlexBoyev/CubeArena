@@ -118,14 +118,52 @@ in real time. It is treated accordingly:
 
 - The backend is expected to run behind TLS in any real deployment (see
   `docs/HOSTING.md`'s tier 2/3 for exactly how — Caddy/nginx with automatic
-  certificates, or a managed platform's own TLS termination). This repo's
-  local `docker compose` setup is plain HTTP, which is appropriate only for
-  `127.0.0.1`.
+  certificates, or a managed platform's own TLS termination). The API
+  container itself always serves plain HTTP directly — it never terminates
+  TLS itself in any tier; a reverse proxy in front of it does that when one
+  exists.
 - **Certificate pinning is explicitly deferred.** For a prototype this size,
   the operational cost (pin rotation, the risk of bricking the client on a
   routine cert renewal) outweighs the benefit against the realistic threat
   model here. If this ever handles real payment or highly sensitive data,
   revisit this.
+
+### LAN_MODE
+
+`docs/HOSTING.md`'s tier 0 runs the full stack — Postgres, API, and the game
+server — on one machine, with the API bound to that machine's real LAN IP
+(via `PUBLIC_HOST`) instead of only `127.0.0.1`, so other devices on the same
+network can reach it. That's a deliberate, narrower trust boundary than
+"only this one machine": every password, access/refresh token, and connect
+ticket travels as **plain, unencrypted HTTP** to anyone who can observe LAN
+traffic (any other device on the same Wi-Fi/switch, a compromised router,
+etc.) — there is no reverse proxy in front of it to add TLS.
+
+This is an accepted trade-off for a same-room LAN party among people who
+already trust each other and the network, not a gap to "fix" — adding TLS
+here would mean either a self-signed cert (which the Unity client doesn't
+validate against a trust store, defeating the point) or a real domain +
+Caddy, which is exactly what tier 2 already exists for.
+
+`LAN_MODE=true` doesn't change what the API serves (it's always been plain
+HTTP — see above); it makes the server print a loud, impossible-to-miss boot
+warning acknowledging that this plain-HTTP endpoint is intentionally
+reachable beyond localhost, so it's never silently exposed. **Never set
+`LAN_MODE=true` on a machine whose port is also forwarded to the internet**
+— that turns "trusted LAN only" into "trusted LAN plus anyone on the
+internet who finds the port."
+
+**Unity client-side gotcha (verified in a built player):** Unity blocks
+plain-HTTP `UnityWebRequest` calls from non-development builds by default
+(`PlayerSettings.insecureHttpOption`, `NotAllowed` unless set otherwise —
+the request fails immediately with "Non-secure HTTP connections disabled in
+release builds," not a connection-refused error). Since tier 0 is exactly
+plain HTTP by design, this project sets it to `AlwaysAllowed`
+(`ProjectSettings/ProjectSettings.asset`'s `insecureHttpOption: 2`) — the
+same accepted trade-off as the rest of this section, just enforced
+client-side too. `DevelopmentOnly` (`1`) is *not* sufficient — a release
+build (what you'd actually hand out for a LAN party) is still blocked by
+that setting.
 
 ## Deliberately out of scope for this prototype
 

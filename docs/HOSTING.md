@@ -1,32 +1,155 @@
 # Cube Arena — Hosting
 
-Three tiers, per the brief's section 5. Tier 1 is what every phase of this
-project has been developed and tested against; tier 2 is the concrete "reach
-it from a second machine" deploy target for Phase 7; tier 3 is a sketch of
-where this would go if it ever needed to scale past a handful of concurrent
-matches.
+Four tiers. Tier 0 is the **default development path** — everything on your
+own PC, no cloud account, no domain, no spending — and doubles as a same-room
+LAN party setup as-is. Tier 1 is plain `localhost`-only local dev (what every
+phase so far was built and verified against before tier 0 added the LAN
+pieces). Tier 2 is the concrete "reach it from a second machine over the
+internet" deploy target for Phase 7, once the game is actually worth
+deploying. Tier 3 is a sketch of where this would go if it ever needed to
+scale past a handful of concurrent matches.
 
-## Tier 1 — Local / LAN party
+## Tier 0 — LAN (default dev path / LAN party)
 
-Everything on one person's machine via `docker compose` (`infra/compose/`).
-This is how every phase so far has been built and verified, and it also
-covers a same-room LAN party as-is — no extra setup needed beyond what's
-below.
+The **full stack** — Postgres, the API, and the dedicated game server — runs
+on one machine, reachable by real Unity clients on the same LAN. No cloud
+VM, no domain needed.
+
+Postgres and the API always run via `docker compose` (`infra/compose/`). The
+dedicated game server has **two ways to run**, both documented below:
+
+- **Native Windows process** (this machine's default — no extra credentials
+  needed): built locally now that the Windows Dedicated Server Build Support
+  module is installed, run directly via
+  `infra/compose/run-gameserver-native.ps1`.
+- **Docker image** (`docker compose --profile docker-gameserver up -d`):
+  pulls the same image `gameserver.yml` pushes to GHCR in CI. Requires
+  either a Linux host (to build `infra/docker/Dockerfile.gameserver`
+  locally instead of pulling) or GHCR pull access — that package is
+  currently **private**, so pulling it from a fresh machine needs either
+  `docker login ghcr.io` with a token that has `read:packages`, or making
+  the package public (GitHub → your profile → Packages →
+  `cubearena-gameserver` → Package settings → Change visibility).
 
 - **Cost**: $0.
-- **Reachability**: `docker-compose.yml` maps the API's port without binding
-  it to `127.0.0.1` (`"${API_PORT:-8080}:8080"`), so Docker already exposes
-  it on the host machine's real network interface, not just `localhost`.
-  Anyone on the *same LAN* can reach it directly at the host's LAN IP (e.g.
-  `192.168.1.50:8080`) — no port forwarding needed, since port forwarding is
-  only for traffic arriving from *outside* the router. Reaching it from
-  *outside* the LAN (e.g. over the internet) is what tier 2 is for.
-- **How to actually run a LAN party**: the host runs `docker compose up`
-  (backend) and the dedicated game server binary as normal, then tells the
-  game server's advertise host / their machine's LAN IP to whoever's
-  joining. Each player just types `http://<host's-LAN-IP>:8080` into the
-  client's login-screen "server address" field (`ClientBootstrap.cs`) —
-  no environment variables or rebuilds needed on their end.
+- **Reachability**: `docker-compose.yml` maps both the API's TCP port and the
+  game server's UDP port without binding to `127.0.0.1`, so Docker exposes
+  them on the host machine's real network interface. Anyone on the *same
+  LAN* can reach them directly at the host's LAN IP — no port forwarding
+  needed, since port forwarding is only for traffic arriving from *outside*
+  the router. Reaching it from *outside* the LAN (over the internet) is what
+  tier 2 is for.
+- **`PUBLIC_HOST`**: set in `.env` to your machine's LAN IP (find it with
+  `ipconfig` on Windows or `ip addr` on Linux/macOS). This becomes the game
+  server's `CUBEARENA_ADVERTISE_HOST` — the address the game server reports
+  when it registers with the backend's fleet, which is exactly the `host`
+  value `/sessions/quickplay` hands back to clients. No backend or ticket
+  code changes — this is pure environment wiring, the same `AdvertiseHost`
+  mechanism tier 2 already uses, just pointed at a LAN IP instead of a
+  public domain.
+- **`LAN_MODE`**: set to `true` in `.env` to make the API print a loud boot
+  warning that it's intentionally reachable beyond `localhost` over plain
+  HTTP. See `SECURITY.md`'s "LAN_MODE" section for exactly what that does
+  and does not change, and why it's a deliberate trusted-network-only
+  trade-off, not a bug.
+- **Connect string**: after bringing the stack up, run
+  `infra/compose/print-connect-info.ps1` — it prints your detected LAN
+  IP(s), cross-checks them against `PUBLIC_HOST`, and prints the exact
+  string to hand each player (paste into the client's login-screen "server
+  address" field — no environment variables or rebuilds needed on their
+  end).
+
+### Tier 0 runbook: bring the stack up and connect four clients
+
+1. **Find your LAN IP** (Windows): `ipconfig` → the `IPv4 Address` under
+   your active adapter (Wi-Fi or Ethernet), e.g. `10.100.102.100`. On
+   Linux/macOS: `ip addr` / `ifconfig`.
+2. **Set `.env`** (`infra/compose/.env`, copied from `.env.example` if you
+   don't have one yet):
+   ```
+   PUBLIC_HOST=<your LAN IP>
+   LAN_MODE=true
+   ```
+   (leave `AUTH_SIGNING_KEY` / `TICKET_SIGNING_KEY_PEM` / `FLEET_API_KEY` as
+   whatever you already generated for local dev — no need to regenerate
+   them for a LAN party.)
+3. **Bring Postgres + the API up**:
+   ```bash
+   cd infra/compose
+   docker compose up -d --build postgres api
+   ```
+4. **Verify the API is up**: `curl http://localhost:8080/health/ready`
+   should return `Healthy`. Check the loud `LAN_MODE` banner appeared:
+   `docker compose logs api | grep -A3 "LAN_MODE is ON"`. Then confirm it's
+   reachable on the LAN IP too, not just localhost:
+   `curl http://<PUBLIC_HOST>:8080/health/ready`.
+5. **Build the dedicated server once** (skip if `Builds/WindowsServer/`
+   already exists and `Assets/`/`Packages/` haven't changed since):
+   ```
+   Unity.exe -batchmode -quit -projectPath <repo root> -executeMethod BuildScript.BuildWindowsDedicatedServer
+   ```
+   Requires the Windows Dedicated Server Build Support module (Unity Hub →
+   install-modules → `windows-server`) — this machine originally didn't
+   have it, so it was installed as part of setting this up.
+6. **Run the game server**: `.\run-gameserver-native.ps1` (from
+   `infra/compose/`) — reads `PUBLIC_HOST`/`FLEET_API_KEY` from `.env` and
+   launches the built server, advertising your LAN IP. Leave this window
+   open; it's your dedicated server process for the party.
+   - **Windows Firewall**: the first time this runs, Windows may prompt to
+     allow the app through the firewall for Private networks — allow it.
+     If players still can't connect, add the rule explicitly (PowerShell,
+     as Administrator): `New-NetFirewallRule -DisplayName "Cube Arena LAN" -Direction Inbound -Protocol UDP -LocalPort 7777 -Action Allow`.
+   - *(Alternative: Docker image instead of a native build — see the note
+     above. Once the GHCR package is public or you're on a Linux host, use
+     `docker compose --profile docker-gameserver up -d gameserver` instead
+     of steps 5-6.)*
+7. **Print the connect string**: `.\print-connect-info.ps1` (from
+   `infra/compose/`). Confirms your detected LAN IP matches `PUBLIC_HOST`
+   and prints the exact address to hand to players.
+8. **Verify the game server's UDP port is actually reachable** (not just
+   from this machine): see the note below — do this once before a real LAN
+   party, not every time.
+9. **Connect clients**: run up to four instances of the Unity client
+   (Editor Play mode for some, built `.exe` for others — mixing both is
+   fine). On each one's login screen, paste the connect string from step 7
+   into the "server address" field, register/log in with a distinct
+   account per player, then Quick Play. Each should land in a different
+   coloured slot in the same match.
+10. **Shut down** when done: close the game server window (`Ctrl+C`), then
+    `docker compose down` (add `-v` only if you also want to wipe the
+    Postgres volume, e.g. to reset all accounts).
+
+**Verifying UDP reachability from the LAN, not just localhost**: a UDP port
+being open to `127.0.0.1` doesn't guarantee it's open to the rest of the
+LAN — the most common gap is the host OS's own firewall (Windows Defender
+Firewall, by default, does *not* auto-allow inbound UDP to a port Docker
+Desktop publishes). From a **second device** on the same LAN:
+```bash
+# Linux/macOS second device, replace with your PUBLIC_HOST/port:
+nc -u -z -v <PUBLIC_HOST> 7777
+```
+If that hangs or is refused while everything works fine from the host
+machine itself, it's almost always the Windows firewall, not Docker or the
+game server — add an inbound rule for UDP 7777 (PowerShell, as
+Administrator, on the host):
+```powershell
+New-NetFirewallRule -DisplayName "Cube Arena LAN" -Direction Inbound -Protocol UDP -LocalPort 7777 -Action Allow
+```
+The most reliable end-to-end check, though, is simply step 7 above from an
+actual second machine's client — if a real player on the LAN connects and
+moves, the UDP path is proven.
+
+## Tier 1 — Local (`localhost`-only)
+
+The same `docker compose` stack as tier 0, minus the LAN-facing pieces
+(`PUBLIC_HOST`, `LAN_MODE`, the game server service) — everything bound to
+`127.0.0.1` only, not reachable from any other device even on the same LAN.
+This is how Phases 0-6 were built and verified before tier 0 existed; tier 0
+is a strict superset and is now the recommended default, so use this tier
+only if you deliberately want the game server *not* running (e.g. testing
+just the backend API in isolation).
+
+- **Cost**: $0.
 
 ## Tier 2 — Single VM (the Phase 7 deploy target)
 

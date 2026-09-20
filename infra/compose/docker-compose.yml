@@ -31,8 +31,36 @@ services:
       Auth__SigningKey: ${AUTH_SIGNING_KEY:?AUTH_SIGNING_KEY must be set in .env}
       Tickets__SigningKeyPem: ${TICKET_SIGNING_KEY_PEM:?TICKET_SIGNING_KEY_PEM must be set in .env}
       Fleet__ApiKey: ${FLEET_API_KEY:?FLEET_API_KEY must be set in .env}
+      LAN_MODE: ${LAN_MODE:-false}
     ports:
       - "${API_PORT:-8080}:8080"
+
+  # Tier 0 (docs/HOSTING.md): the dedicated game server, using the same image
+  # gameserver.yml builds and pushes to GHCR in CI. Behind a profile (not
+  # started by a bare `docker compose up`) because it needs either GHCR pull
+  # access to that (currently private) package, or a Linux host that can
+  # build infra/docker/Dockerfile.gameserver locally — neither is true by
+  # default on a Windows dev box, which instead runs the dedicated server as
+  # a native process (see docs/HOSTING.md's Tier 0 runbook). Use this
+  # service directly with `docker compose --profile docker-gameserver up -d`
+  # once the GHCR package is public, or on a Linux host.
+  gameserver:
+    image: ghcr.io/alexboyev/cubearena-gameserver:latest
+    profiles: ["docker-gameserver"]
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      CUBEARENA_BACKEND_URL: http://api:8080
+      CUBEARENA_FLEET_API_KEY: ${FLEET_API_KEY:?FLEET_API_KEY must be set in .env}
+      # The host address returned to clients via /sessions/quickplay — must be
+      # reachable by whoever's joining, so it's your machine's LAN IP for a
+      # LAN party, not "localhost" or a container-internal name.
+      CUBEARENA_ADVERTISE_HOST: ${PUBLIC_HOST:?PUBLIC_HOST must be set in .env (your machine's LAN IP) — see docs/HOSTING.md Tier 0}
+      CUBEARENA_LISTEN_PORT: ${GAMESERVER_PORT:-7777}
+      CUBEARENA_CAPACITY: 4
+    ports:
+      - "${GAMESERVER_PORT:-7777}:7777/udp"
 
 volumes:
   postgres-data:
