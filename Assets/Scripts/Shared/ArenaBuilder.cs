@@ -28,6 +28,7 @@ namespace CubeArena.Shared
             ground.transform.SetParent(root.transform);
             ground.transform.localScale = new Vector3(
                 MovementConstants.ArenaHalfExtent / 5f, 1f, MovementConstants.ArenaHalfExtent / 5f);
+            MaterialUtil.ApplyLitColor(ground.GetComponent<Renderer>(), new Color(0.3f, 0.32f, 0.36f));
 
             const float wallHeight = 3f;
             const float wallThickness = 1f;
@@ -45,6 +46,7 @@ namespace CubeArena.Shared
                 obstacle.transform.SetParent(root.transform);
                 obstacle.transform.position = ObstaclePositions[i];
                 obstacle.transform.localScale = new Vector3(2f, 2f, 2f);
+                MaterialUtil.ApplyLitColor(obstacle.GetComponent<Renderer>(), new Color(0.55f, 0.4f, 0.25f));
             }
 
             return root;
@@ -57,6 +59,7 @@ namespace CubeArena.Shared
             wall.transform.SetParent(parent);
             wall.transform.position = position;
             wall.transform.localScale = scale;
+            MaterialUtil.ApplyLitColor(wall.GetComponent<Renderer>(), new Color(0.2f, 0.2f, 0.24f));
         }
     }
 }

@@ -1,9 +1,11 @@
+using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 using CubeArena.Shared;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 namespace CubeArena.Client
@@ -39,6 +41,8 @@ namespace CubeArena.Client
         private InputField _passwordField;
         private InputField _displayNameField;
         private bool _isLanMode;
+        private GameObject _currentPanel;
+        private readonly Stack<GameObject> _panelHistory = new();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoBootstrap()
@@ -76,6 +80,18 @@ namespace CubeArena.Client
         private void OnDestroy()
         {
             PlayerController.LocalPlayerSpawned -= OnLocalPlayerSpawned;
+        }
+
+        // Escape mirrors the on-screen Back buttons (GoBack), except while actually
+        // connecting/playing — where it's left free rather than yanking a menu panel
+        // over the HUD mid-session (leaving a game uses the explicit Leave button).
+        private void Update()
+        {
+            if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame
+                && !_connectingPanel.activeSelf && !_hudPanel.activeSelf)
+            {
+                GoBack();
+            }
         }
 
         // Graceful leave (section 6): shut the connection down cleanly instead of just
@@ -131,7 +147,7 @@ namespace CubeArena.Client
             var buttonSize = new Vector2(280, 50);
             UiFactory.CreateButton(panelRect, "Online", new Vector2(0, 15), OnStartOnlineClicked, buttonSize);
             UiFactory.CreateButton(panelRect, "LAN", new Vector2(0, -45), OnStartLanClicked, buttonSize);
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -110), OnBackToMenuClicked, new Vector2(120, 36));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -110), OnBackClicked, new Vector2(120, 36));
         }
 
         private void BuildOptionsPanel()
@@ -140,7 +156,7 @@ namespace CubeArena.Client
             _optionsPanel = panelRect.gameObject;
             UiFactory.CreateText(panelRect, "Options", 24, new Vector2(0, 70), new Vector2(300, 40));
             UiFactory.CreateText(panelRect, "Work in progress", 18, new Vector2(0, 0), new Vector2(300, 40));
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -75), OnBackToMenuClicked);
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -75), OnBackClicked);
         }
 
         private void BuildAboutPanel()
@@ -152,7 +168,7 @@ namespace CubeArena.Client
                 "Cube Arena\nA 4-player multiplayer prototype.\n\n" +
                 "Server-authoritative movement, signed connect\ntickets, and a real dedicated game server.",
                 14, new Vector2(0, 10), new Vector2(340, 110));
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -95), OnBackToMenuClicked);
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -95), OnBackClicked);
         }
 
         private void BuildLoginPanel()
@@ -173,7 +189,7 @@ namespace CubeArena.Client
             UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -50), OnRegisterClicked);
             UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -50), OnLoginClicked);
             _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -115), new Vector2(340, 50));
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -180), OnBackToMenuClicked, new Vector2(120, 36));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -180), OnBackClicked, new Vector2(120, 36));
         }
 
         // (Re)creates the auth/session clients if the server-address field has changed
@@ -195,12 +211,13 @@ namespace CubeArena.Client
 
         private void BuildCharacterSelectPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 260));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 300));
             _characterSelectPanel = panelRect.gameObject;
             UiFactory.CreateText(panelRect, "Character Select", 24, new Vector2(0, 90), new Vector2(300, 40));
             _displayNameField = UiFactory.CreateInputField(panelRect, "display name", new Vector2(0, 30));
             UiFactory.CreateButton(panelRect, "Quick Play", new Vector2(0, -30), OnQuickPlayClicked);
             _selectStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -90), new Vector2(340, 40));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -125), OnBackClicked, new Vector2(120, 36));
         }
 
         private void BuildConnectingPanel()
@@ -234,16 +251,39 @@ namespace CubeArena.Client
             _connectingPanel.SetActive(panel == _connectingPanel);
             _hudPanel.SetActive(panel == _hudPanel);
             _minimap.SetActive(panel == _hudPanel);
+            _currentPanel = panel;
         }
 
-        private void OnStartGameClicked() => ShowOnly(_startGamePanel);
+        // Pushes the panel showing now onto history before switching — use this for
+        // "forward" transitions the player can Back/Esc back out of (GoBack). Plain
+        // ShowOnly is for resets that aren't really "back"-able, e.g. returning to
+        // character select on disconnect.
+        private void NavigateTo(GameObject panel)
+        {
+            if (_currentPanel != null && _currentPanel != panel)
+            {
+                _panelHistory.Push(_currentPanel);
+            }
+
+            ShowOnly(panel);
+        }
+
+        private void GoBack()
+        {
+            if (_panelHistory.Count > 0)
+            {
+                ShowOnly(_panelHistory.Pop());
+            }
+        }
+
+        private void OnStartGameClicked() => NavigateTo(_startGamePanel);
 
         private void OnStartOnlineClicked()
         {
             _isLanMode = false;
             _serverField.text = PlayerPrefs.GetString(OnlineBackendUrlPrefKey, _config.BackendUrl);
             ((Text)_serverField.placeholder).text = "server address";
-            ShowOnly(_loginPanel);
+            NavigateTo(_loginPanel);
         }
 
         private void OnStartLanClicked()
@@ -256,11 +296,11 @@ namespace CubeArena.Client
             ShowOnly(_loginPanel);
         }
 
-        private void OnOptionsClicked() => ShowOnly(_optionsPanel);
+        private void OnOptionsClicked() => NavigateTo(_optionsPanel);
 
-        private void OnAboutClicked() => ShowOnly(_aboutPanel);
+        private void OnAboutClicked() => NavigateTo(_aboutPanel);
 
-        private void OnBackToMenuClicked() => ShowOnly(_mainMenuPanel);
+        private void OnBackClicked() => GoBack();
 
         private void OnExitClicked()
         {
@@ -286,7 +326,7 @@ namespace CubeArena.Client
             var (success, error) = await _auth.LoginAsync(_emailField.text, _passwordField.text);
             if (success)
             {
-                ShowOnly(_characterSelectPanel);
+                NavigateTo(_characterSelectPanel);
             }
             else
             {
@@ -345,6 +385,11 @@ namespace CubeArena.Client
             _hudText.text = $"Slot {player.SlotIndex}";
             _hudText.color = PlayerColors.Get(player.SlotIndex);
             ShowOnly(_hudPanel);
+
+            // Locked while playing so mouse movement drives CameraFollow's look instead
+            // of the OS cursor; released again on disconnect below.
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
         }
 
         private void OnDisconnected(ulong clientId)
@@ -352,6 +397,9 @@ namespace CubeArena.Client
             var reason = NetworkManager.Singleton != null ? NetworkManager.Singleton.DisconnectReason : null;
             _selectStatus.text = string.IsNullOrEmpty(reason) ? "Disconnected." : $"Disconnected: {reason}";
             ShowOnly(_characterSelectPanel);
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
         }
 
         private void OnLeaveClicked()

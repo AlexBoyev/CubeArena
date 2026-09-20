@@ -30,6 +30,8 @@ namespace CubeArena.Shared
         private Renderer[] _renderers;
         private Vector2 _lastSentInput;
         private Vector2 _currentInput; // server-side: latest input received from the owner
+        private float _verticalVelocity; // server-side: jump/gravity state
+        private bool _jumpRequested; // server-side: set by JumpServerRpc, consumed next tick
 
         public int SlotIndex => _slotIndex.Value;
 
@@ -99,13 +101,46 @@ namespace CubeArena.Shared
                 {
                     input.Normalize();
                 }
+
+                if (keyboard.spaceKey.wasPressedThisFrame)
+                {
+                    JumpServerRpc();
+                }
             }
 
-            if (input != _lastSentInput)
+            // Resolved to a camera-relative world-space direction here (client-side, where
+            // Camera.main is known) rather than on the server, so WASD moves relative to
+            // wherever CameraFollow's mouse-look is currently pointed. The server stays
+            // camera-agnostic — it just simulates whatever world-space direction arrives,
+            // exactly as before this was raw WASD-as-world-axes. Since that direction now
+            // changes continuously while the camera turns (not just when keys change), the
+            // change-detection below sends far more often while turning-and-moving at once
+            // — acceptable bandwidth for this prototype's scale.
+            var worldInput = CameraRelativeXZ(input);
+            if (worldInput != _lastSentInput)
             {
-                _lastSentInput = input;
-                SubmitInputServerRpc(input);
+                _lastSentInput = worldInput;
+                SubmitInputServerRpc(worldInput);
             }
+        }
+
+        private static Vector2 CameraRelativeXZ(Vector2 input)
+        {
+            var cam = Camera.main;
+            if (cam == null || input == Vector2.zero)
+            {
+                return input;
+            }
+
+            var forward = cam.transform.forward;
+            forward.y = 0;
+            forward.Normalize();
+            var right = cam.transform.right;
+            right.y = 0;
+            right.Normalize();
+
+            var world = forward * input.y + right * input.x;
+            return new Vector2(world.x, world.z);
         }
 
         // Local prediction from the same input, immediately, for responsiveness — then a
@@ -140,9 +175,34 @@ namespace CubeArena.Shared
             _currentInput = input;
         }
 
+        [ServerRpc]
+        private void JumpServerRpc()
+        {
+            _jumpRequested = true;
+        }
+
         private void SimulateMovement(float deltaTime)
         {
-            var move = new Vector3(_currentInput.x, 0, _currentInput.y) * (MovementConstants.MoveSpeed * deltaTime);
+            if (_characterController.isGrounded)
+            {
+                if (_jumpRequested)
+                {
+                    _verticalVelocity = MovementConstants.JumpSpeed;
+                }
+                else if (_verticalVelocity < 0f)
+                {
+                    _verticalVelocity = -2f; // small downward push keeps isGrounded true
+                }
+            }
+            else
+            {
+                _verticalVelocity += MovementConstants.Gravity * deltaTime;
+            }
+
+            _jumpRequested = false;
+
+            var move = new Vector3(_currentInput.x, 0, _currentInput.y) * (MovementConstants.MoveSpeed * deltaTime)
+                       + Vector3.up * (_verticalVelocity * deltaTime);
             _characterController.Move(move);
             _serverPosition.Value = transform.position;
         }
@@ -209,6 +269,7 @@ namespace CubeArena.Shared
             body.transform.localPosition = new Vector3(0, 0.5f, 0);
             body.transform.localScale = Vector3.one;
             UnityEngine.Object.Destroy(body.GetComponent<Collider>());
+            MaterialUtil.ApplyLitColor(body.GetComponent<Renderer>(), Color.white);
 
             var head = GameObject.CreatePrimitive(PrimitiveType.Cube);
             head.name = "Head";
@@ -216,6 +277,7 @@ namespace CubeArena.Shared
             head.transform.localPosition = new Vector3(0, 1.25f, 0);
             head.transform.localScale = new Vector3(0.5f, 0.5f, 0.5f);
             UnityEngine.Object.Destroy(head.GetComponent<Collider>());
+            MaterialUtil.ApplyLitColor(head.GetComponent<Renderer>(), Color.white);
 
             root.AddComponent<PlayerController>();
             return root;
