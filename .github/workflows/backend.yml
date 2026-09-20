@@ -38,6 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GHCR requires a lowercase repository name; github.repository_owner
+      # preserves the account's actual casing (e.g. "AlexBoyev"), which
+      # Docker rejects — GitHub Actions expressions have no toLower().
+      - name: Compute lowercase image owner
+        run: echo "IMAGE_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -50,5 +56,5 @@ jobs:
           file: infra/docker/Dockerfile.api
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/cubearena-api:latest
-            ghcr.io/${{ github.repository_owner }}/cubearena-api:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_OWNER }}/cubearena-api:latest
+            ghcr.io/${{ env.IMAGE_OWNER }}/cubearena-api:${{ github.sha }}

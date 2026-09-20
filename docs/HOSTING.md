@@ -117,12 +117,12 @@ isolates them.
    machine should return `Healthy`.
 8. **Run the game server.** `.github/workflows/gameserver.yml` builds the real
    Linux server via GameCI and pushes it to
-   `ghcr.io/<owner>/cubearena-gameserver:latest` on every push to `master`
+   `ghcr.io/alexboyev/cubearena-gameserver:latest` on every push to `master`
    (needs `UNITY_LICENSE` etc. as repo secrets first — see the workflow's
    header comment). Pull that image directly, or build it yourself if you've
    installed the Linux Dedicated Server module locally (see `CLAUDE.md`):
    ```bash
-   docker pull ghcr.io/<owner>/cubearena-gameserver:latest
+   docker pull ghcr.io/alexboyev/cubearena-gameserver:latest
    # or: docker build -f infra/docker/Dockerfile.gameserver -t cubearena-gameserver .
    docker run -d --network compose_default \
      -p 7777:7777/udp \
