@@ -277,11 +277,11 @@ namespace CubeArena.Client
             var transport = gameObject.GetComponent<UnityTransport>() ?? gameObject.AddComponent<UnityTransport>();
 
             var playerTemplate = PlayerController.CreateTemplate();
-            playerTemplate.SetActive(false);
 
             networkManager.NetworkConfig ??= new NetworkConfig();
             networkManager.NetworkConfig.NetworkTransport = transport;
             networkManager.NetworkConfig.ConnectionApproval = true; // must match the server (see ServerBootstrap.cs)
+            networkManager.NetworkConfig.EnableSceneManagement = false; // must match the server (see ServerBootstrap.cs)
             networkManager.AddNetworkPrefab(playerTemplate);
             networkManager.NetworkConfig.ConnectionData = Encoding.UTF8.GetBytes(result.Ticket);
 

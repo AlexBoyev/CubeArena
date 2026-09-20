@@ -16,6 +16,7 @@ namespace CubeArena.Server
     {
         private CancellationTokenSource _heartbeatCts;
         private readonly Dictionary<ulong, Guid> _connectedUsers = new();
+        private readonly Dictionary<ulong, (Guid UserId, int SlotIndex)> _approvedPendingConnect = new();
         private FleetClient _fleet;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -40,7 +41,6 @@ namespace CubeArena.Server
             ArenaBuilder.Build();
 
             var playerTemplate = PlayerController.CreateTemplate();
-            playerTemplate.SetActive(false);
 
             var networkManager = GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
             var transport = GetComponent<UnityTransport>() ?? gameObject.AddComponent<UnityTransport>();
@@ -52,6 +52,12 @@ namespace CubeArena.Server
             // connection fails silently with a generic disconnect before ConnectionApprovalCallback
             // ever runs (no server-side log at all, since it's rejected before reaching that code).
             networkManager.NetworkConfig.ConnectionApproval = true;
+            // The whole arena is built from code at runtime (ArenaBuilder), not through
+            // Unity's actual scene-loading system, so there's no real scene for NGO's
+            // scene-synchronization handshake to manage — disabled since it doesn't apply
+            // here. Also part of NGO's NetworkConfig hash check, so the client MUST set the
+            // same value.
+            networkManager.NetworkConfig.EnableSceneManagement = false;
             networkManager.AddNetworkPrefab(playerTemplate);
 
             transport.SetConnectionData(config.AdvertiseHost, config.ListenPort, listenAddress: "0.0.0.0");
@@ -65,15 +71,33 @@ namespace CubeArena.Server
 
             var approval = new ConnectionApprovalHandler(validator, networkManager, _fleet.SessionId, config.Capacity);
             networkManager.ConnectionApprovalCallback = approval.Approve;
+
+            // Deliberately not spawned here: NGO hasn't finished establishing the
+            // connection yet at this point in ConnectionApprovalCallback, so a player
+            // object spawned synchronously inside it can spawn server-side and never
+            // reach that specific client. OnClientConnectedCallback below is the
+            // documented-safe point to spawn per-client objects once the connection is
+            // actually finalized.
             approval.ClientApproved += (clientId, userId, slotIndex) =>
             {
-                _connectedUsers[clientId] = userId;
-                SpawnPlayer(networkManager, playerTemplate, clientId, slotIndex);
-                _ = ConfirmSlotSafeAsync(userId);
+                _approvedPendingConnect[clientId] = (userId, slotIndex);
+            };
+
+            networkManager.OnClientConnectedCallback += clientId =>
+            {
+                if (!_approvedPendingConnect.Remove(clientId, out var info))
+                {
+                    return;
+                }
+
+                _connectedUsers[clientId] = info.UserId;
+                SpawnPlayer(playerTemplate, clientId, info.SlotIndex);
+                _ = ConfirmSlotSafeAsync(info.UserId);
             };
 
             networkManager.OnClientDisconnectCallback += clientId =>
             {
+                _approvedPendingConnect.Remove(clientId);
                 if (_connectedUsers.Remove(clientId, out var userId))
                 {
                     _ = ReleaseSlotSafeAsync(userId);
@@ -125,13 +149,20 @@ namespace CubeArena.Server
             }
         }
 
-        private static void SpawnPlayer(NetworkManager networkManager, GameObject playerTemplate, ulong clientId, int slotIndex)
+        private static void SpawnPlayer(GameObject playerTemplate, ulong clientId, int slotIndex)
         {
             var spawnPosition = SpawnPoints.Get(slotIndex);
-            var networkObject = NetworkObject.InstantiateAndSpawn(
-                playerTemplate, networkManager, ownerClientId: clientId, isPlayerObject: true, position: spawnPosition);
 
-            networkObject.GetComponent<PlayerController>().ServerInitialize(slotIndex, spawnPosition);
+            // Set the NetworkVariables' initial values before spawning, not after: the
+            // initial spawn message then already carries the correct values instead of
+            // needing a separate post-spawn replication update (also avoids NGO's harmless
+            // but noisy "NetworkVariable is written to, but doesn't know its NetworkBehaviour
+            // yet" warning). See PlayerController.CreateTemplate for the real fixes needed
+            // to make a runtime-only prefab spawn correctly at all — GlobalObjectIdHash and
+            // staying active, not spawn ordering.
+            var instance = UnityEngine.Object.Instantiate(playerTemplate, spawnPosition, Quaternion.identity);
+            instance.GetComponent<PlayerController>().ServerInitialize(slotIndex, spawnPosition);
+            instance.GetComponent<NetworkObject>().SpawnAsPlayerObject(clientId);
         }
     }
 }

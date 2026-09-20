@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -54,8 +55,8 @@ namespace CubeArena.Shared
             }
         }
 
-        // Server-only: called by ConnectionApprovalHandler's spawn logic right after
-        // NetworkObject.InstantiateAndSpawn, before any client has a chance to read it.
+        // Server-only: called by ServerBootstrap's spawn logic, before the object is
+        // actually spawned on the network — see ServerBootstrap.SpawnPlayer.
         public void ServerInitialize(int slotIndex, Vector3 spawnPosition)
         {
             _slotIndex.Value = slotIndex;
@@ -155,10 +156,47 @@ namespace CubeArena.Shared
             }
         }
 
+        // This template is built 100% at runtime (CLAUDE.md forbids hand-edited prefab
+        // assets), which hits two separate NGO requirements that a real, Editor-authored
+        // prefab asset would satisfy automatically. Both are needed together — hitting
+        // either one alone still leaves a connecting client stuck on "Connecting..."
+        // forever, with no error on either side, which is exactly what made this so slow
+        // to track down.
+        //
+        // 1. NetworkObject.GlobalObjectIdHash must be non-zero and consistent between
+        //    client and server. It's normally assigned by Unity's Editor tooling when a
+        //    NetworkObject is part of a real prefab asset on disk; a purely runtime one
+        //    never gets it, and NGO silently aborts every spawn server-side ("Detected
+        //    NetworkObject GlobalObjectIdHash value of 0!...runtime generated network
+        //    prefab assets...not supported") via its own internal logging channel, not a
+        //    normal exception or Debug.LogError. NGO's own test suite hits this same
+        //    problem and works around it by directly assigning the (internal) field (see
+        //    NetcodeIntegrationTestHelpers.MakeNetworkObjectTestPrefab); since that field
+        //    isn't accessible outside NGO's assembly, reflection is the only option here.
+        //    A fixed constant works because both the client and server independently call
+        //    this same shared method, so they land on the identical value with no
+        //    negotiation needed.
+        //
+        // 2. The template GameObject must be *active*. NGO's InvokeBehaviourNetworkSpawn
+        //    silently skips calling OnNetworkSpawn on any NetworkBehaviour whose GameObject
+        //    isn't active in the hierarchy. The server used to work around this by
+        //    explicitly re-activating its own manually-instantiated spawn copies — but the
+        //    client has no equivalent code, since NGO instantiates its local copy of a
+        //    newly-spawned object internally, straight from the registered network prefab
+        //    reference (this exact template), with nothing to reactivate it if the source
+        //    was inactive. The template is parked far below the arena instead, so it stays
+        //    active (satisfying NGO) without being visible to anyone.
+        private const uint PlayerTemplateGlobalObjectIdHash = 0xC0BEA53A;
+        private static readonly FieldInfo GlobalObjectIdHashField =
+            typeof(NetworkObject).GetField("GlobalObjectIdHash", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly Vector3 TemplateParkPosition = new(0f, -1000f, 0f);
+
         public static GameObject CreateTemplate()
         {
             var root = new GameObject("Player");
-            root.AddComponent<NetworkObject>();
+            root.transform.position = TemplateParkPosition;
+            var networkObject = root.AddComponent<NetworkObject>();
+            GlobalObjectIdHashField.SetValue(networkObject, PlayerTemplateGlobalObjectIdHash);
 
             var controller = root.AddComponent<CharacterController>();
             controller.height = 1.5f;
