@@ -455,6 +455,17 @@ namespace CubeArena.Client
 
         private async void OnLoginClicked()
         {
+            // "Remember me" only ever restores the email, never the password (see
+            // ApplyRememberedLoginFields) — clicking Login right after relaunch with a
+            // still-empty password field was reaching the server and, until the backend
+            // fix, crashing it outright instead of just failing normally. Caught here too
+            // so it's an instant local message either way.
+            if (string.IsNullOrEmpty(_passwordField.text))
+            {
+                _loginStatus.text = "Enter your password.";
+                return;
+            }
+
             EnsureClientsForServerField();
             _loginStatus.text = "Logging in...";
             var (success, error) = await _auth.LoginAsync(_emailField.text, _passwordField.text);

@@ -40,6 +40,16 @@ public static class AuthEndpoints
 
         group.MapPost("/login", async (HttpContext httpContext, LoginRequest request, AuthService auth, IOptions<AuthOptions> options, CancellationToken ct) =>
         {
+            // Argon2 throws on an empty password (see PasswordHasher.ComputeHash) rather
+            // than just comparing false, which turned an empty password into an unhandled
+            // 500 instead of an ordinary "wrong password" — register already guards this
+            // (password_too_short below), login didn't. Same response as any other wrong
+            // password, so this doesn't leak whether the account exists either.
+            if (string.IsNullOrEmpty(request.Password))
+            {
+                return Results.Json(new ErrorResponse("invalid_credentials"), statusCode: StatusCodes.Status401Unauthorized);
+            }
+
             var result = await auth.LoginAsync(request.Email, request.Password, ct, httpContext.TraceIdentifier);
 
             switch (result.Outcome)
