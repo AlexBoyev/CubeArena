@@ -24,15 +24,33 @@ on:
       - ".github/workflows/gameserver.yml"
 
 jobs:
+  # Secrets can't be referenced directly in a job's `if:` (GitHub Actions
+  # rejects the expression outright), so resolve presence into a step
+  # output here first, where `run:` can see secrets, then gate the real
+  # job on that output.
+  check-license:
+    runs-on: ubuntu-latest
+    outputs:
+      has-license: ${{ steps.check.outputs.has-license }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "$UNITY_LICENSE" ] || [ -n "$UNITY_SERIAL" ]; then
+            echo "has-license=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-license=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+
   build-linux-server:
+    needs: check-license
+    if: needs.check-license.outputs.has-license == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    # Skip (not fail) until UNITY_LICENSE/UNITY_SERIAL is added as a repo
-    # secret — see the header comment above. Keeps this check from showing
-    # a permanent, non-actionable red X before that secret exists.
-    if: ${{ secrets.UNITY_LICENSE != '' || secrets.UNITY_SERIAL != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
