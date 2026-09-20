@@ -323,13 +323,17 @@ namespace CubeArena.Client
 
         private void BuildHud()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 130));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 170));
             panelRect.anchorMin = panelRect.anchorMax = new Vector2(0f, 1f);
             panelRect.pivot = new Vector2(0f, 1f);
             panelRect.anchoredPosition = new Vector2(16, -16);
             _hudPanel = panelRect.gameObject;
             _hudText = UiFactory.CreateText(panelRect, "", 18, new Vector2(0, 30), new Vector2(240, 50));
             UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -35), OnLeaveClicked);
+            // Answers "what button is crawl" in-game rather than only in a changelog —
+            // crawl (C) is easy to miss since it's separate from crouch (Ctrl).
+            UiFactory.CreateText(panelRect, "WASD move | Space jump | Ctrl crouch | C crawl | Esc pause",
+                12, new Vector2(0, -70), new Vector2(250, 40));
 
             _minimap = Minimap.Create(_canvas.transform).gameObject;
 

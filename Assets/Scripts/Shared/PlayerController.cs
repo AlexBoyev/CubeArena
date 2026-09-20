@@ -15,6 +15,17 @@ namespace CubeArena.Shared
     [RequireComponent(typeof(CharacterController))]
     public class PlayerController : NetworkBehaviour
     {
+        // Three tiers, not just crouch/stand: crawl is lower and slower than crouch,
+        // and the crawl tunnels (ArenaBuilder.BuildCrawlTunnel) are built low enough
+        // that only PlayerPose.Crawling fits under them — crouching alone isn't enough,
+        // by design, so crawl has an actual reason to exist as its own input.
+        public enum PlayerPose : byte
+        {
+            Standing,
+            Crouching,
+            Crawling,
+        }
+
         // Raised on the owning client only, once its own player object has spawned —
         // the client bootstrap uses this to attach the camera and show the HUD colour.
         public static event Action<PlayerController> LocalPlayerSpawned;
@@ -30,10 +41,12 @@ namespace CubeArena.Shared
         private const float ReconcileBlendSpeed = 5f;
         private const float StandingControllerHeight = 1.9f;
         private const float CrouchControllerHeight = 1.1f;
+        private const float CrawlControllerHeight = 0.6f; // prone-low, for the crawl tunnels specifically — crouch height doesn't fit under them
         private const float CrouchVisualScaleY = 0.6f;
+        private const float CrawlVisualScaleY = 0.32f;
         private const float WalkSwingSpeed = 9f; // walk-cycle phase advance per meter traveled
         private const float MaxSwingAngleDeg = 35f;
-        private const float PoseLerpSpeed = 8f;
+        private const float PoseLerpSpeed = 8f; // limb-swing smoothing only — pose height/squash snap instantly, see AnimateVisuals
 
         private readonly NetworkVariable<Vector3> _serverPosition = new(
             writePerm: NetworkVariableWritePermission.Server);
@@ -41,7 +54,7 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<int> _slotIndex = new(
             writePerm: NetworkVariableWritePermission.Server);
 
-        private readonly NetworkVariable<bool> _isCrouching = new(
+        private readonly NetworkVariable<PlayerPose> _pose = new(
             writePerm: NetworkVariableWritePermission.Server);
 
         private readonly NetworkVariable<int> _score = new(
@@ -66,7 +79,7 @@ namespace CubeArena.Shared
         private bool _jumpRequested; // server-side: set by JumpServerRpc, consumed next tick
         private float _predictedVerticalVelocity; // owner-client-side: local jump/gravity prediction
         private bool _predictedJumpRequested; // owner-client-side: consumed in PredictAndReconcile
-        private bool _crouchHeld; // owner-client-side: last-sent state, for change detection
+        private PlayerPose _lastSentPose; // owner-client-side: last-sent state, for change detection
         private bool _inputPaused; // owner-client-side: see SetInputPaused
 
         // Purely cosmetic (client-only — see AnimateVisuals): the swingable limb joints
@@ -248,11 +261,17 @@ namespace CubeArena.Shared
                     JumpServerRpc();
                 }
 
-                var crouching = keyboard.leftCtrlKey.isPressed;
-                if (crouching != _crouchHeld)
+                // C (crawl) takes priority over Ctrl (crouch) if both are somehow held —
+                // crawl is the lower/slower of the two, so it's always the "safer" choice.
+                var desiredPose = keyboard.cKey.isPressed
+                    ? PlayerPose.Crawling
+                    : keyboard.leftCtrlKey.isPressed
+                        ? PlayerPose.Crouching
+                        : PlayerPose.Standing;
+                if (desiredPose != _lastSentPose)
                 {
-                    _crouchHeld = crouching;
-                    SetCrouchServerRpc(crouching);
+                    _lastSentPose = desiredPose;
+                    SetPoseServerRpc(desiredPose);
                 }
             }
 
@@ -311,8 +330,8 @@ namespace CubeArena.Shared
         // something as immediate as a jump.
         private void PredictAndReconcile()
         {
-            ApplyCrouchToController(_isCrouching.Value);
-            var speedMultiplier = _isCrouching.Value ? MovementConstants.CrouchSpeedMultiplier : 1f;
+            ApplyPoseToController(_pose.Value);
+            var speedMultiplier = SpeedMultiplierFor(_pose.Value);
 
             var grounded = _characterController.isGrounded;
             if (_predictedJumpRequested && grounded)
@@ -369,15 +388,29 @@ namespace CubeArena.Shared
         }
 
         [ServerRpc]
-        private void SetCrouchServerRpc(bool crouching)
+        private void SetPoseServerRpc(PlayerPose pose)
         {
-            _isCrouching.Value = crouching;
+            _pose.Value = pose;
         }
+
+        private static float SpeedMultiplierFor(PlayerPose pose) => pose switch
+        {
+            PlayerPose.Crawling => MovementConstants.CrawlSpeedMultiplier,
+            PlayerPose.Crouching => MovementConstants.CrouchSpeedMultiplier,
+            _ => 1f,
+        };
+
+        private static float HeightFor(PlayerPose pose) => pose switch
+        {
+            PlayerPose.Crawling => CrawlControllerHeight,
+            PlayerPose.Crouching => CrouchControllerHeight,
+            _ => StandingControllerHeight,
+        };
 
         private void SimulateMovement(float deltaTime)
         {
-            ApplyCrouchToController(_isCrouching.Value);
-            var speedMultiplier = _isCrouching.Value ? MovementConstants.CrouchSpeedMultiplier : 1f;
+            ApplyPoseToController(_pose.Value);
+            var speedMultiplier = SpeedMultiplierFor(_pose.Value);
 
             var grounded = _characterController.isGrounded;
 
@@ -410,44 +443,43 @@ namespace CubeArena.Shared
             _serverPosition.Value = transform.position;
         }
 
-        // Resizes the CharacterController itself for a crouch (so it can, e.g., fit under
-        // something a standing player couldn't) — called from both SimulateMovement and
-        // PredictAndReconcile since both are the two places that actually call Move() and
-        // therefore care about the collider's real dimensions. Purely visual crouch
-        // (squashing the model) is separate — see AnimateVisuals.
+        // Resizes the CharacterController itself for the current pose (so it can, e.g.,
+        // fit under something a standing player couldn't) — called from both
+        // SimulateMovement and PredictAndReconcile since both are the two places that
+        // actually call Move() and therefore care about the collider's real dimensions.
+        // Purely visual squash (the model) is separate — see AnimateVisuals.
         //
-        // Un-crouching is refused if there isn't headroom (e.g. still under the crouch
-        // tunnel's roof) — CharacterController.height doesn't do its own collision sweep
-        // when resized, so growing back to standing height under something too low let the
-        // collider silently interpenetrate the roof, with the visual head poking out
-        // through it (the actual bug report: "head is visible above wall" while crouched
-        // under something). Player stays crouched (both physically and visually) until
-        // they've actually moved somewhere with room to stand.
-        private void ApplyCrouchToController(bool crouching)
+        // Growing into a taller pose is refused if there isn't headroom for it (e.g.
+        // still under a tunnel roof) — CharacterController.height doesn't do its own
+        // collision sweep when resized, so growing back to standing height under
+        // something too low let the collider silently interpenetrate the roof, with the
+        // visual head poking out through it (the original bug report: "head is visible
+        // above wall" while crouched under something). Player stays at their current
+        // (smaller) height until they've actually moved somewhere with room to grow.
+        private void ApplyPoseToController(PlayerPose pose)
         {
-            var wantsStanding = !crouching;
-            if (wantsStanding && !HasStandingClearance())
-            {
-                wantsStanding = false;
-            }
-
-            var targetHeight = wantsStanding ? StandingControllerHeight : CrouchControllerHeight;
-            if (Mathf.Approximately(_characterController.height, targetHeight))
+            var desiredHeight = HeightFor(pose);
+            if (desiredHeight > _characterController.height && !HasClearanceForHeight(desiredHeight))
             {
                 return;
             }
 
-            _characterController.height = targetHeight;
-            _characterController.center = new Vector3(0, targetHeight / 2f, 0);
+            if (Mathf.Approximately(_characterController.height, desiredHeight))
+            {
+                return;
+            }
+
+            _characterController.height = desiredHeight;
+            _characterController.center = new Vector3(0, desiredHeight / 2f, 0);
         }
 
         private static readonly Collider[] ClearanceOverlapBuffer = new Collider[8];
 
-        private bool HasStandingClearance()
+        private bool HasClearanceForHeight(float height)
         {
             var radius = _characterController.radius * 0.95f;
             var bottom = transform.position + Vector3.up * radius;
-            var top = transform.position + Vector3.up * (StandingControllerHeight - radius);
+            var top = transform.position + Vector3.up * Mathf.Max(height - radius, radius);
             var count = Physics.OverlapCapsuleNonAlloc(
                 bottom, top, radius, ClearanceOverlapBuffer, ~0, QueryTriggerInteraction.Ignore);
 
@@ -501,9 +533,21 @@ namespace CubeArena.Shared
             SetLimbSwing(_armLeftPivot, -swing);
             SetLimbSwing(_armRightPivot, swing);
 
-            var targetScaleY = _isCrouching.Value ? CrouchVisualScaleY : 1f;
+            // Snapped instantly, not lerped: ApplyPoseToController resizes the actual
+            // CharacterController collider instantly too, and letting this visual squash
+            // lag a fraction of a second behind it meant the head kept its full standing
+            // height for a moment right as the (already-shrunk) collider carried the
+            // player under a low roof — visually clipping through it even though the
+            // real collision shape was already clear. Matching them exactly removes that
+            // window entirely.
+            var targetScaleY = _pose.Value switch
+            {
+                PlayerPose.Crawling => CrawlVisualScaleY,
+                PlayerPose.Crouching => CrouchVisualScaleY,
+                _ => 1f,
+            };
             var scale = _visual.localScale;
-            scale.y = Mathf.Lerp(scale.y, targetScaleY, Time.deltaTime * PoseLerpSpeed);
+            scale.y = targetScaleY;
             _visual.localScale = scale;
 
             // Billboard: always face the viewer, same as most games' nameplates — a
@@ -572,9 +616,9 @@ namespace CubeArena.Shared
             controller.radius = 0.35f;
             controller.center = new Vector3(0, StandingControllerHeight / 2f, 0);
 
-            // All visible geometry lives under "Visual" so a crouch can squash just this
-            // wrapper (AnimateVisuals scales it on Y) without touching the
-            // CharacterController's own collision shape, which ApplyCrouchToController
+            // All visible geometry lives under "Visual" so a crouch/crawl can squash just
+            // this wrapper (AnimateVisuals scales it on Y) without touching the
+            // CharacterController's own collision shape, which ApplyPoseToController
             // resizes directly and separately.
             var visual = new GameObject("Visual");
             visual.transform.SetParent(root.transform, false);

@@ -13,7 +13,7 @@ namespace CubeArena.Shared
             new(-8, 1, 8),
             new(8, 1, -8),
             new(-8, 1, -8),
-            new(0, 1, 12),
+            new(4, 1, 12), // was (0,1,12) — sat directly in front of the north house's door at (0,0,13.5), blocking it
             new(0, 1, -12),
             new(12, 1, 0),
             new(-12, 1, 0),
@@ -223,16 +223,19 @@ namespace CubeArena.Shared
             BuildBlock(parent, "House_Loft", loftPos, new Vector3(half * 2f - 2f, loftThickness, 2.2f), wallColor);
         }
 
-        // A narrower, lower, dark-themed cousin of BuildCrouchTunnel — same clearance
-        // convention (crouch clears it, standing doesn't) but tighter (0.9m wide instead
-        // of 3m), for a crawl-through feel rather than a walk-through one. direction is
-        // the tunnel's long axis (need not be axis-aligned); start is the near end,
-        // flush against whatever it's attached to (a house wall).
+        // A narrower, lower, dark-themed cousin of BuildCrouchTunnel — tighter (1m wide
+        // instead of 3m) and, crucially, low enough that PlayerPose.Crouching (~1.1m,
+        // PlayerController.CrouchControllerHeight) does NOT fit under it — only
+        // PlayerPose.Crawling (~0.6m, hold C) does. Bound C separately from crouch (Ctrl)
+        // for exactly this: a crouch tunnel to walk through, and a crawl tunnel too low
+        // for anything but crawling. direction is the tunnel's long axis (need not be
+        // axis-aligned); start is the near end, flush against whatever it's attached to
+        // (a house wall).
         private static void BuildCrawlTunnel(Transform parent, Vector3 start, Vector3 direction, float length)
         {
             const float halfWidth = 0.5f;
             const float wallHeight = 2.5f;
-            const float roofClearance = 1.3f;
+            const float roofClearance = 0.85f; // < CrouchControllerHeight (1.1) — only crawling clears this
             const float roofThickness = 0.3f;
             var color = new Color(0.15f, 0.15f, 0.18f);
 
