@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using Unity.Netcode;
 using UnityEngine;
@@ -15,6 +16,12 @@ namespace CubeArena.Shared
         // Raised on the owning client only, once its own player object has spawned —
         // the client bootstrap uses this to attach the camera and show the HUD colour.
         public static event Action<PlayerController> LocalPlayerSpawned;
+
+        // Server-side only: every currently-spawned player, kept up to date in
+        // OnNetworkSpawn/OnNetworkDespawn. PickupController scans this to find who's
+        // standing close enough to collect it, and ServerBootstrap scans it to read
+        // everyone's score when a match ends.
+        public static readonly List<PlayerController> ActiveServerPlayers = new();
 
 
         private const float ReconcileSnapThresholdSqr = 4f; // snap if off by more than 2m (e.g. on spawn)
@@ -33,6 +40,9 @@ namespace CubeArena.Shared
             writePerm: NetworkVariableWritePermission.Server);
 
         private readonly NetworkVariable<bool> _isCrouching = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
+        private readonly NetworkVariable<int> _score = new(
             writePerm: NetworkVariableWritePermission.Server);
 
         // Degrees around Y — the character always faces wherever CameraFollow's
@@ -64,6 +74,7 @@ namespace CubeArena.Shared
         private float _walkCyclePhase;
 
         public int SlotIndex => _slotIndex.Value;
+        public int Score => _score.Value;
 
         private void Awake()
         {
@@ -87,6 +98,11 @@ namespace CubeArena.Shared
             ApplyColor(_slotIndex.Value);
             _slotIndex.OnValueChanged += (_, newValue) => ApplyColor(newValue);
 
+            if (IsServer)
+            {
+                ActiveServerPlayers.Add(this);
+            }
+
             if (!IsServer)
             {
                 transform.position = _serverPosition.Value;
@@ -96,6 +112,26 @@ namespace CubeArena.Shared
             {
                 LocalPlayerSpawned?.Invoke(this);
             }
+        }
+
+        public override void OnNetworkDespawn()
+        {
+            if (IsServer)
+            {
+                ActiveServerPlayers.Remove(this);
+            }
+        }
+
+        // Server-only: called by PickupController when this player collects one.
+        public void AddScore(int amount)
+        {
+            _score.Value += amount;
+        }
+
+        // Server-only: called by ServerBootstrap when a new match round starts.
+        public void ResetScore()
+        {
+            _score.Value = 0;
         }
 
         // Server-only: called by ServerBootstrap's spawn logic, before the object is

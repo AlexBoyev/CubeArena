@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
@@ -34,10 +35,14 @@ namespace CubeArena.Client
         private GameObject _characterSelectPanel;
         private GameObject _connectingPanel;
         private GameObject _hudPanel;
+        private GameObject _matchHudPanel;
         private GameObject _minimap;
         private Text _loginStatus;
         private Text _selectStatus;
         private Text _hudText;
+        private Text _timerText;
+        private Text _scoreboardText;
+        private float _matchHudRefreshTimer;
         private InputField _serverField;
         private InputField _emailField;
         private InputField _passwordField;
@@ -92,6 +97,11 @@ namespace CubeArena.Client
         // reach the (invisible) Leave button at all.
         private void Update()
         {
+            if (_hudPanel.activeSelf)
+            {
+                UpdateMatchHud();
+            }
+
             if (Keyboard.current == null || !Keyboard.current.escapeKey.wasPressedThisFrame)
             {
                 return;
@@ -105,6 +115,47 @@ namespace CubeArena.Client
             {
                 GoBack();
             }
+        }
+
+        // Throttled to 4x/second — plenty for a countdown and scoreboard, and cheaper
+        // than a FindObjectsByType scan every single frame. Everything read here
+        // (MatchManager.Instance.TimeRemaining, each PlayerController's Score/SlotIndex)
+        // is already replicated to every client via NetworkVariables, so no extra
+        // networking is needed just to show it.
+        private void UpdateMatchHud()
+        {
+            _matchHudRefreshTimer -= Time.deltaTime;
+            if (_matchHudRefreshTimer > 0f)
+            {
+                return;
+            }
+
+            _matchHudRefreshTimer = 0.25f;
+
+            if (MatchManager.Instance != null)
+            {
+                var remaining = Mathf.Max(0, Mathf.CeilToInt(MatchManager.Instance.TimeRemaining));
+                _timerText.text = $"{remaining / 60}:{remaining % 60:D2}";
+            }
+
+            // FindObjectsByType also picks up the local, never-spawned player template
+            // GameObject that ConnectToGameServer keeps around for NGO's network-prefab
+            // registration (see PlayerController.CreateTemplate) — filter to only actually
+            // spawned (i.e. real, connected) players.
+            var players = FindObjectsByType<PlayerController>(FindObjectsSortMode.None);
+            Array.Sort(players, (a, b) => b.Score.CompareTo(a.Score));
+            var scoreboard = new StringBuilder();
+            foreach (var player in players)
+            {
+                if (!player.IsSpawned)
+                {
+                    continue;
+                }
+
+                scoreboard.AppendLine($"Slot {player.SlotIndex}: {player.Score}");
+            }
+
+            _scoreboardText.text = scoreboard.ToString();
         }
 
         // Graceful leave (section 6): shut the connection down cleanly instead of just
@@ -252,6 +303,17 @@ namespace CubeArena.Client
             UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -35), OnLeaveClicked);
 
             _minimap = Minimap.Create(_canvas.transform).gameObject;
+
+            // Top-center: match clock + live scoreboard, both driven by MatchManager/
+            // PlayerController's replicated NetworkVariables (see UpdateMatchHud) — every
+            // client already has local copies of these, no extra networking needed here.
+            var matchPanelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(200, 150));
+            matchPanelRect.anchorMin = matchPanelRect.anchorMax = new Vector2(0.5f, 1f);
+            matchPanelRect.pivot = new Vector2(0.5f, 1f);
+            matchPanelRect.anchoredPosition = new Vector2(0, -16);
+            _matchHudPanel = matchPanelRect.gameObject;
+            _timerText = UiFactory.CreateText(matchPanelRect, "5:00", 26, new Vector2(0, 55), new Vector2(180, 36));
+            _scoreboardText = UiFactory.CreateText(matchPanelRect, "", 16, new Vector2(0, -10), new Vector2(180, 100));
         }
 
         private void ShowOnly(GameObject panel)
@@ -265,6 +327,7 @@ namespace CubeArena.Client
             _connectingPanel.SetActive(panel == _connectingPanel);
             _hudPanel.SetActive(panel == _hudPanel);
             _minimap.SetActive(panel == _hudPanel);
+            _matchHudPanel.SetActive(panel == _hudPanel);
             _currentPanel = panel;
         }
 
@@ -408,6 +471,12 @@ namespace CubeArena.Client
             networkManager.NetworkConfig.ConnectionApproval = true; // must match the server (see ServerBootstrap.cs)
             networkManager.NetworkConfig.EnableSceneManagement = false; // must match the server (see ServerBootstrap.cs)
             networkManager.AddNetworkPrefab(playerTemplate);
+            // Every network prefab the server can spawn must also be registered here with
+            // the same GlobalObjectIdHash, or NGO can't resolve the spawn message — see
+            // PlayerController.CreateTemplate's comment for why runtime-only prefabs need
+            // that hash assigned manually at all.
+            networkManager.AddNetworkPrefab(PickupController.CreateTemplate());
+            networkManager.AddNetworkPrefab(MatchManager.CreateTemplate());
             networkManager.NetworkConfig.ConnectionData = Encoding.UTF8.GetBytes(result.Ticket);
 
             transport.SetConnectionData(result.Host, (ushort)result.Port);

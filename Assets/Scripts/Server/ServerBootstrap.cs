@@ -14,14 +14,15 @@ namespace CubeArena.Server
     // editing a .unity or .prefab asset. See CLAUDE.md.
     public class ServerBootstrap : MonoBehaviour
     {
-        // No win/score conditions exist yet (see docs/ROADMAP.md) — this is a simple
-        // round-timer placeholder for now, not a real match-end condition.
-        private const float MatchDurationSeconds = 300f; // 5 minutes
+        private const int PickupCount = 6;
 
         private CancellationTokenSource _heartbeatCts;
         private readonly Dictionary<ulong, Guid> _connectedUsers = new();
         private readonly Dictionary<ulong, (Guid UserId, int SlotIndex)> _approvedPendingConnect = new();
         private FleetClient _fleet;
+        private NetworkManager _networkManager;
+        private GameObject _pickupTemplate;
+        private MatchManager _matchManager;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoBootstrap()
@@ -45,8 +46,11 @@ namespace CubeArena.Server
             ArenaBuilder.Build();
 
             var playerTemplate = PlayerController.CreateTemplate();
+            _pickupTemplate = PickupController.CreateTemplate();
+            var matchManagerTemplate = MatchManager.CreateTemplate();
 
             var networkManager = GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
+            _networkManager = networkManager;
             var transport = GetComponent<UnityTransport>() ?? gameObject.AddComponent<UnityTransport>();
 
             networkManager.NetworkConfig ??= new NetworkConfig();
@@ -63,6 +67,8 @@ namespace CubeArena.Server
             // same value.
             networkManager.NetworkConfig.EnableSceneManagement = false;
             networkManager.AddNetworkPrefab(playerTemplate);
+            networkManager.AddNetworkPrefab(_pickupTemplate);
+            networkManager.AddNetworkPrefab(matchManagerTemplate);
 
             transport.SetConnectionData(config.AdvertiseHost, config.ListenPort, listenAddress: "0.0.0.0");
 
@@ -122,7 +128,13 @@ namespace CubeArena.Server
                 TimeSpan.FromSeconds(10),
                 () => networkManager.ConnectedClientsIds.Count,
                 _heartbeatCts.Token);
-            _ = RunMatchTimerLoopAsync(networkManager, _heartbeatCts.Token);
+
+            var matchManagerInstance = UnityEngine.Object.Instantiate(matchManagerTemplate);
+            matchManagerInstance.GetComponent<NetworkObject>().Spawn();
+            _matchManager = matchManagerInstance.GetComponent<MatchManager>();
+            _matchManager.MatchEnded += OnMatchEnded;
+
+            SpawnPickups();
         }
 
         private void OnApplicationQuit()
@@ -130,37 +142,74 @@ namespace CubeArena.Server
             _heartbeatCts?.Cancel();
         }
 
+        private void SpawnPickups()
+        {
+            for (var i = 0; i < PickupCount; i++)
+            {
+                var instance = UnityEngine.Object.Instantiate(_pickupTemplate);
+                instance.GetComponent<PickupController>().ServerInitialize(PickupController.GetRandomPosition());
+                instance.GetComponent<NetworkObject>().Spawn();
+            }
+        }
+
         // A leaving player only ever affects their own slot (OnClientDisconnectCallback
         // above) — the server, and everyone else's session, keeps running regardless.
-        // This loop is the other half: a hard cap on how long a match can run before
-        // everyone's sent back to character select and a fresh match window starts,
-        // rather than one match running forever. The server process itself is untouched
-        // either way — quick play can match players into it again immediately after.
-        private async Task RunMatchTimerLoopAsync(NetworkManager networkManager, CancellationToken token)
+        // This is the other half: a hard cap (MatchManager.MatchDurationSeconds) on how
+        // long a match can run before everyone's sent back to character select and a
+        // fresh round starts, rather than one match running forever. The server process
+        // itself is untouched either way — quick play can match players into it again
+        // immediately after.
+        private void OnMatchEnded()
         {
-            try
+            var reason = BuildMatchEndReason();
+            var connectedClientIds = new List<ulong>(_networkManager.ConnectedClientsIds);
+            foreach (var clientId in connectedClientIds)
             {
-                while (!token.IsCancellationRequested)
+                _networkManager.DisconnectClient(clientId, reason);
+            }
+
+            Debug.Log($"[ServerBootstrap] {reason} ({connectedClientIds.Count} client(s) disconnected.)");
+
+            foreach (var player in new List<PlayerController>(PlayerController.ActiveServerPlayers))
+            {
+                player.ResetScore();
+            }
+
+            _matchManager.ResetForNewRound();
+        }
+
+        private static string BuildMatchEndReason()
+        {
+            const string suffix = " — quick play again to start a new match.";
+
+            PlayerController winner = null;
+            var highScore = 0;
+            var tiedWithHighScore = false;
+            foreach (var player in PlayerController.ActiveServerPlayers)
+            {
+                if (player.Score > highScore)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(MatchDurationSeconds), token);
-
-                    var connectedClientIds = new List<ulong>(networkManager.ConnectedClientsIds);
-                    foreach (var clientId in connectedClientIds)
-                    {
-                        networkManager.DisconnectClient(clientId,
-                            "Match ended (5 minute time limit) — quick play again to start a new match.");
-                    }
-
-                    if (connectedClientIds.Count > 0)
-                    {
-                        Debug.Log($"[ServerBootstrap] Match timer expired — disconnected {connectedClientIds.Count} client(s). Starting a new match window.");
-                    }
+                    highScore = player.Score;
+                    winner = player;
+                    tiedWithHighScore = false;
+                }
+                else if (player.Score == highScore && highScore > 0)
+                {
+                    tiedWithHighScore = true;
                 }
             }
-            catch (TaskCanceledException)
+
+            if (winner == null)
             {
-                // Expected on shutdown — OnApplicationQuit cancels this token.
+                return "Match ended (5 minute time limit) — nobody scored." + suffix;
             }
+
+            if (tiedWithHighScore)
+            {
+                return $"Match ended (5 minute time limit) — tied at {highScore} point(s)!" + suffix;
+            }
+
+            return $"Match ended (5 minute time limit) — Slot {winner.SlotIndex} wins with {highScore} point(s)!" + suffix;
         }
 
         private async Task ConfirmSlotSafeAsync(Guid userId)
