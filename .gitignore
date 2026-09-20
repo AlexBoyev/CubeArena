@@ -54,6 +54,7 @@ bin/
 /gameserver_run.log
 /*_build*.log
 /*_build*.pid
+/infra/compose/package_client_hook.log
 
 # Unity3D generated meta files that shouldn't be ignored are NOT listed here —
 # .meta files ARE tracked, they're essential to Unity project integrity
