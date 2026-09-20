@@ -6,16 +6,27 @@ it from a second machine" deploy target for Phase 7; tier 3 is a sketch of
 where this would go if it ever needed to scale past a handful of concurrent
 matches.
 
-## Tier 1 — Local
+## Tier 1 — Local / LAN party
 
-Everything on your own machine via `docker compose` (`infra/compose/`).
-This is how every phase so far has been built and verified.
+Everything on one person's machine via `docker compose` (`infra/compose/`).
+This is how every phase so far has been built and verified, and it also
+covers a same-room LAN party as-is — no extra setup needed beyond what's
+below.
 
 - **Cost**: $0.
-- **Reachability**: `localhost` / `127.0.0.1` only. Not reachable from another
-  machine, even on the same LAN, without additional port-forwarding you'd
-  have to set up yourself (not covered here, since tier 2 is the intended
-  path once you want that).
+- **Reachability**: `docker-compose.yml` maps the API's port without binding
+  it to `127.0.0.1` (`"${API_PORT:-8080}:8080"`), so Docker already exposes
+  it on the host machine's real network interface, not just `localhost`.
+  Anyone on the *same LAN* can reach it directly at the host's LAN IP (e.g.
+  `192.168.1.50:8080`) — no port forwarding needed, since port forwarding is
+  only for traffic arriving from *outside* the router. Reaching it from
+  *outside* the LAN (e.g. over the internet) is what tier 2 is for.
+- **How to actually run a LAN party**: the host runs `docker compose up`
+  (backend) and the dedicated game server binary as normal, then tells the
+  game server's advertise host / their machine's LAN IP to whoever's
+  joining. Each player just types `http://<host's-LAN-IP>:8080` into the
+  client's login-screen "server address" field (`ClientBootstrap.cs`) —
+  no environment variables or rebuilds needed on their end.
 
 ## Tier 2 — Single VM (the Phase 7 deploy target)
 
