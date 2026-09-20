@@ -67,6 +67,7 @@ namespace CubeArena.Shared
         private float _predictedVerticalVelocity; // owner-client-side: local jump/gravity prediction
         private bool _predictedJumpRequested; // owner-client-side: consumed in PredictAndReconcile
         private bool _crouchHeld; // owner-client-side: last-sent state, for change detection
+        private bool _inputPaused; // owner-client-side: see SetInputPaused
 
         // Purely cosmetic (client-only — see AnimateVisuals): the swingable limb joints
         // and walk-cycle state.
@@ -156,6 +157,22 @@ namespace CubeArena.Shared
         // DisplayName previously being purely cosmetic/local).
         public void SubmitDisplayName(string name) => SetDisplayNameServerRpc(name);
 
+        // Owner-client-side: Escape's local pause (ClientBootstrap) calls this — it only
+        // ever stops *this* client from reading/sending new WASD input, exactly the
+        // "local pause, my player only" the multiplayer session itself can't do (other
+        // players, and the server simulation, are completely unaffected). Explicitly
+        // sends one zero-movement update on pausing so the character doesn't keep
+        // sliding in whatever direction was held when Escape was pressed.
+        public void SetInputPaused(bool paused)
+        {
+            _inputPaused = paused;
+            if (paused && _lastSentInput != Vector2.zero)
+            {
+                _lastSentInput = Vector2.zero;
+                SubmitInputServerRpc(Vector2.zero, _lastSentYaw);
+            }
+        }
+
         [ServerRpc]
         private void SetDisplayNameServerRpc(FixedString32Bytes name)
         {
@@ -183,7 +200,11 @@ namespace CubeArena.Shared
         {
             if (IsOwner && !IsServer)
             {
-                ReadAndSendInput();
+                if (!_inputPaused)
+                {
+                    ReadAndSendInput();
+                }
+
                 PredictAndReconcile();
             }
             else if (!IsServer)
@@ -394,9 +415,23 @@ namespace CubeArena.Shared
         // PredictAndReconcile since both are the two places that actually call Move() and
         // therefore care about the collider's real dimensions. Purely visual crouch
         // (squashing the model) is separate — see AnimateVisuals.
+        //
+        // Un-crouching is refused if there isn't headroom (e.g. still under the crouch
+        // tunnel's roof) — CharacterController.height doesn't do its own collision sweep
+        // when resized, so growing back to standing height under something too low let the
+        // collider silently interpenetrate the roof, with the visual head poking out
+        // through it (the actual bug report: "head is visible above wall" while crouched
+        // under something). Player stays crouched (both physically and visually) until
+        // they've actually moved somewhere with room to stand.
         private void ApplyCrouchToController(bool crouching)
         {
-            var targetHeight = crouching ? CrouchControllerHeight : StandingControllerHeight;
+            var wantsStanding = !crouching;
+            if (wantsStanding && !HasStandingClearance())
+            {
+                wantsStanding = false;
+            }
+
+            var targetHeight = wantsStanding ? StandingControllerHeight : CrouchControllerHeight;
             if (Mathf.Approximately(_characterController.height, targetHeight))
             {
                 return;
@@ -404,6 +439,27 @@ namespace CubeArena.Shared
 
             _characterController.height = targetHeight;
             _characterController.center = new Vector3(0, targetHeight / 2f, 0);
+        }
+
+        private static readonly Collider[] ClearanceOverlapBuffer = new Collider[8];
+
+        private bool HasStandingClearance()
+        {
+            var radius = _characterController.radius * 0.95f;
+            var bottom = transform.position + Vector3.up * radius;
+            var top = transform.position + Vector3.up * (StandingControllerHeight - radius);
+            var count = Physics.OverlapCapsuleNonAlloc(
+                bottom, top, radius, ClearanceOverlapBuffer, ~0, QueryTriggerInteraction.Ignore);
+
+            for (var i = 0; i < count; i++)
+            {
+                if (ClearanceOverlapBuffer[i].GetComponentInParent<PlayerController>() != this)
+                {
+                    return false; // something else (a roof, another player) is in the way
+                }
+            }
+
+            return true;
         }
 
         private void ApplyColor(int slotIndex)

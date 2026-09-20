@@ -36,7 +36,10 @@ namespace CubeArena.Client
         private GameObject _connectingPanel;
         private GameObject _hudPanel;
         private GameObject _matchHudPanel;
+        private GameObject _pausePanel;
         private GameObject _minimap;
+        private PlayerController _localPlayer;
+        private bool _isPaused;
         private Text _loginStatus;
         private Text _selectStatus;
         private Text _hudText;
@@ -91,10 +94,11 @@ namespace CubeArena.Client
         }
 
         // Escape mirrors the on-screen Back buttons (GoBack) in the menus. While actually
-        // playing it instead leaves the game (same as the Leave button) rather than
-        // yanking a menu panel over the HUD — the cursor is locked/hidden for
-        // CameraFollow's mouse-look while playing, so without this there'd be no way to
-        // reach the (invisible) Leave button at all.
+        // playing it instead opens/closes a *local* pause overlay (TogglePause) — the
+        // match itself can't pause (other players keep going regardless), so this only
+        // ever freezes this client's own input/camera and gives a way back to the same
+        // session, same as most multiplayer games' Escape menu. Leaving is still its own
+        // explicit choice, from a button in that overlay.
         private void Update()
         {
             if (_hudPanel.activeSelf)
@@ -109,13 +113,25 @@ namespace CubeArena.Client
 
             if (_hudPanel.activeSelf)
             {
-                OnLeaveClicked();
+                TogglePause();
             }
             else if (!_connectingPanel.activeSelf)
             {
                 GoBack();
             }
         }
+
+        private void TogglePause()
+        {
+            _isPaused = !_isPaused;
+            _pausePanel.SetActive(_isPaused);
+            _localPlayer?.SetInputPaused(_isPaused);
+
+            Cursor.lockState = _isPaused ? CursorLockMode.None : CursorLockMode.Locked;
+            Cursor.visible = _isPaused;
+        }
+
+        private void OnResumeClicked() => TogglePause();
 
         // Throttled to 4x/second — plenty for a countdown and scoreboard, and cheaper
         // than a FindObjectsByType scan every single frame. Everything read here
@@ -181,7 +197,20 @@ namespace CubeArena.Client
             BuildCharacterSelectPanel();
             BuildConnectingPanel();
             BuildHud();
+            BuildPausePanel();
             ShowOnly(_mainMenuPanel);
+        }
+
+        // A local-only overlay (see Update's TogglePause) — not part of the exclusive
+        // ShowOnly panel set, since it sits on top of the HUD rather than replacing it.
+        private void BuildPausePanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(300, 220));
+            _pausePanel = panelRect.gameObject;
+            _pausePanel.SetActive(false);
+            UiFactory.CreateText(panelRect, "Paused", 28, new Vector2(0, 70), new Vector2(260, 40));
+            UiFactory.CreateButton(panelRect, "Resume", new Vector2(0, 0), OnResumeClicked, new Vector2(220, 50));
+            UiFactory.CreateButton(panelRect, "Leave Match", new Vector2(0, -65), OnLeaveClicked, new Vector2(220, 50));
         }
 
         private void BuildMainMenuPanel()
@@ -512,6 +541,7 @@ namespace CubeArena.Client
             }
 
             player.SubmitDisplayName(displayName);
+            _localPlayer = player;
             ShowOnly(_hudPanel);
 
             // Locked while playing so mouse movement drives CameraFollow's look instead
@@ -525,6 +555,10 @@ namespace CubeArena.Client
             var reason = NetworkManager.Singleton != null ? NetworkManager.Singleton.DisconnectReason : null;
             _selectStatus.text = string.IsNullOrEmpty(reason) ? "Disconnected." : $"Disconnected: {reason}";
             ShowOnly(_characterSelectPanel);
+
+            _localPlayer = null;
+            _isPaused = false;
+            _pausePanel.SetActive(false);
 
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;

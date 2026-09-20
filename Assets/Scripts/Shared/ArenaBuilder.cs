@@ -53,8 +53,9 @@ namespace CubeArena.Shared
             // just blocking a path — placed in the open ring between the fixed obstacles
             // above and the walls, clear of both spawn points and each other.
             BuildCrouchTunnel(root.transform, new Vector3(0f, 0f, 0f));
-            BuildClimbableTower(root.transform, new Vector3(6f, 0f, -14f));
+            BuildClimbableTower(root.transform, new Vector3(6f, 0f, -16f));
             BuildJumpGap(root.transform, new Vector3(-16f, 0f, 6f));
+            BuildBalanceBeam(root.transform, new Vector3(17f, 0f, -3f));
 
             return root;
         }
@@ -96,22 +97,54 @@ namespace CubeArena.Shared
                 new Vector3(halfWidth * 2f + wallThickness * 2f, roofThickness, halfLength * 2f), color);
         }
 
-        // Three ascending steps (~0.75m each — comfortably under a jump's ~1.1m apex),
-        // forming a small climbable "building": jump from the ground onto step 0, then
-        // step to step up to the top.
+        // Four ascending steps (~0.75m each — comfortably under a jump's ~1.1m apex),
+        // forming a climbable "building": jump from the ground onto step 0, then step to
+        // step up to a flat rooftop at the top, about 3m up.
         private static void BuildClimbableTower(Transform parent, Vector3 basePosition)
         {
+            const int stepCount = 4;
             const float stepHeight = 0.75f;
             const float stepDepth = 2.2f;
             const float stepWidth = 4f;
+            const float roofDepth = 3f;
             var color = new Color(0.45f, 0.45f, 0.5f);
 
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < stepCount; i++)
             {
                 var height = stepHeight * (i + 1);
                 var position = basePosition + new Vector3(0f, height / 2f, i * stepDepth);
                 BuildBlock(parent, $"Tower_Step{i}", position, new Vector3(stepWidth, height, stepDepth), color);
             }
+
+            var roofHeight = stepHeight * stepCount;
+            var lastStepFarEdgeOffset = (stepCount - 1) * stepDepth + stepDepth / 2f;
+            var roofZOffset = lastStepFarEdgeOffset + roofDepth / 2f + 0.3f;
+            var roofPosition = basePosition + new Vector3(0f, roofHeight / 2f, roofZOffset);
+            BuildBlock(parent, "Tower_Roof", roofPosition, new Vector3(stepWidth, roofHeight, roofDepth), color);
+        }
+
+        // A narrow (1.2m — about the width of a player) elevated walkway between two
+        // short support blocks. Nothing about it needs crouch or jump, just careful
+        // walking: the CharacterController's own radius (0.35m) leaves little margin to
+        // drift off the edge, unlike every other piece here which is wide enough to not
+        // need any care.
+        private static void BuildBalanceBeam(Transform parent, Vector3 basePosition)
+        {
+            const float supportHeight = 0.9f;
+            const float beamWidth = 1.2f;
+            const float beamLength = 12f;
+            const float beamThickness = 0.3f;
+            var color = new Color(0.5f, 0.35f, 0.55f);
+
+            BuildBlock(parent, "Beam_SupportA",
+                basePosition + new Vector3(0f, supportHeight / 2f, -beamLength / 2f + 0.5f),
+                new Vector3(beamWidth, supportHeight, 1f), color);
+            BuildBlock(parent, "Beam_SupportB",
+                basePosition + new Vector3(0f, supportHeight / 2f, beamLength / 2f - 0.5f),
+                new Vector3(beamWidth, supportHeight, 1f), color);
+            BuildBlock(parent, "Beam_Walkway",
+                basePosition + new Vector3(0f, supportHeight + beamThickness / 2f, 0f),
+                new Vector3(beamWidth, beamThickness, beamLength), color);
         }
 
         // Two low platforms with a gap wide enough that only a jump clears it, not just
