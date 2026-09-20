@@ -82,13 +82,23 @@ namespace CubeArena.Client
             PlayerController.LocalPlayerSpawned -= OnLocalPlayerSpawned;
         }
 
-        // Escape mirrors the on-screen Back buttons (GoBack), except while actually
-        // connecting/playing — where it's left free rather than yanking a menu panel
-        // over the HUD mid-session (leaving a game uses the explicit Leave button).
+        // Escape mirrors the on-screen Back buttons (GoBack) in the menus. While actually
+        // playing it instead leaves the game (same as the Leave button) rather than
+        // yanking a menu panel over the HUD — the cursor is locked/hidden for
+        // CameraFollow's mouse-look while playing, so without this there'd be no way to
+        // reach the (invisible) Leave button at all.
         private void Update()
         {
-            if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame
-                && !_connectingPanel.activeSelf && !_hudPanel.activeSelf)
+            if (Keyboard.current == null || !Keyboard.current.escapeKey.wasPressedThisFrame)
+            {
+                return;
+            }
+
+            if (_hudPanel.activeSelf)
+            {
+                OnLeaveClicked();
+            }
+            else if (!_connectingPanel.activeSelf)
             {
                 GoBack();
             }

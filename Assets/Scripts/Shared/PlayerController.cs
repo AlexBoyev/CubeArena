@@ -32,6 +32,8 @@ namespace CubeArena.Shared
         private Vector2 _currentInput; // server-side: latest input received from the owner
         private float _verticalVelocity; // server-side: jump/gravity state
         private bool _jumpRequested; // server-side: set by JumpServerRpc, consumed next tick
+        private float _predictedVerticalVelocity; // owner-client-side: local jump/gravity prediction
+        private bool _predictedJumpRequested; // owner-client-side: consumed in PredictAndReconcile
 
         public int SlotIndex => _slotIndex.Value;
 
@@ -104,6 +106,7 @@ namespace CubeArena.Shared
 
                 if (keyboard.spaceKey.wasPressedThisFrame)
                 {
+                    _predictedJumpRequested = true; // consumed locally in PredictAndReconcile
                     JumpServerRpc();
                 }
             }
@@ -147,15 +150,40 @@ namespace CubeArena.Shared
         // soft continuous correction toward the server's last known truth. This is not a
         // full input-replay reconciliation (no input history buffer); see docs/NETCODE.md
         // for what that would add and why this simpler version was chosen instead.
+        //
+        // Vertical (jump/gravity) is predicted the same way, mirroring SimulateMovement's
+        // logic — without this, the owner would only ever see their own jump once the
+        // server's replicated position caught up, which reads as sluggish/late for
+        // something as immediate as a jump.
         private void PredictAndReconcile()
         {
-            var move = new Vector3(_lastSentInput.x, 0, _lastSentInput.y) * (MovementConstants.MoveSpeed * Time.deltaTime);
+            var grounded = _characterController.isGrounded;
+            if (_predictedJumpRequested && grounded)
+            {
+                _predictedVerticalVelocity = MovementConstants.JumpSpeed;
+                _predictedJumpRequested = false;
+            }
+            else if (grounded)
+            {
+                if (_predictedVerticalVelocity < 0f)
+                {
+                    _predictedVerticalVelocity = -2f;
+                }
+            }
+            else
+            {
+                _predictedVerticalVelocity += MovementConstants.Gravity * Time.deltaTime;
+            }
+
+            var move = new Vector3(_lastSentInput.x, 0, _lastSentInput.y) * (MovementConstants.MoveSpeed * Time.deltaTime)
+                       + Vector3.up * (_predictedVerticalVelocity * Time.deltaTime);
             _characterController.Move(move);
 
             var error = _serverPosition.Value - transform.position;
             if (error.sqrMagnitude > ReconcileSnapThresholdSqr)
             {
                 transform.position = _serverPosition.Value;
+                _predictedVerticalVelocity = 0f; // avoid compounding stale predicted velocity across a hard snap
             }
             else
             {
@@ -183,13 +211,22 @@ namespace CubeArena.Shared
 
         private void SimulateMovement(float deltaTime)
         {
-            if (_characterController.isGrounded)
+            var grounded = _characterController.isGrounded;
+
+            // _jumpRequested is only cleared once it's actually consumed below, not
+            // whenever this method happens to run — CharacterController.isGrounded
+            // reflects the *previous* Move() call's result, so it can read false for a
+            // tick or two right as the player lands or the request arrives. Clearing it
+            // unconditionally (as an earlier version did) silently ate the jump on
+            // exactly those ticks, which is what made jumping feel unreliable/glitchy.
+            if (_jumpRequested && grounded)
             {
-                if (_jumpRequested)
-                {
-                    _verticalVelocity = MovementConstants.JumpSpeed;
-                }
-                else if (_verticalVelocity < 0f)
+                _verticalVelocity = MovementConstants.JumpSpeed;
+                _jumpRequested = false;
+            }
+            else if (grounded)
+            {
+                if (_verticalVelocity < 0f)
                 {
                     _verticalVelocity = -2f; // small downward push keeps isGrounded true
                 }
@@ -198,8 +235,6 @@ namespace CubeArena.Shared
             {
                 _verticalVelocity += MovementConstants.Gravity * deltaTime;
             }
-
-            _jumpRequested = false;
 
             var move = new Vector3(_currentInput.x, 0, _currentInput.y) * (MovementConstants.MoveSpeed * deltaTime)
                        + Vector3.up * (_verticalVelocity * deltaTime);
@@ -259,28 +294,35 @@ namespace CubeArena.Shared
             GlobalObjectIdHashField.SetValue(networkObject, PlayerTemplateGlobalObjectIdHash);
 
             var controller = root.AddComponent<CharacterController>();
-            controller.height = 1.5f;
-            controller.radius = 0.5f;
-            controller.center = new Vector3(0, 0.75f, 0);
+            controller.height = 1.9f;
+            controller.radius = 0.35f;
+            controller.center = new Vector3(0, 0.95f, 0);
 
-            var body = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            body.name = "Body";
-            body.transform.SetParent(root.transform, false);
-            body.transform.localPosition = new Vector3(0, 0.5f, 0);
-            body.transform.localScale = Vector3.one;
-            UnityEngine.Object.Destroy(body.GetComponent<Collider>());
-            MaterialUtil.ApplyLitColor(body.GetComponent<Renderer>(), Color.white);
-
-            var head = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            head.name = "Head";
-            head.transform.SetParent(root.transform, false);
-            head.transform.localPosition = new Vector3(0, 1.25f, 0);
-            head.transform.localScale = new Vector3(0.5f, 0.5f, 0.5f);
-            UnityEngine.Object.Destroy(head.GetComponent<Collider>());
-            MaterialUtil.ApplyLitColor(head.GetComponent<Renderer>(), Color.white);
+            // Blocky humanoid (torso/head/arms/legs) instead of a plain 2-cube stack —
+            // still built entirely from Cube primitives (CLAUDE.md: no mesh/prefab
+            // assets), just with human-like proportions instead of a "totem pole" look.
+            CreateBodyPart(root.transform, "Torso", new Vector3(0, 1.25f, 0), new Vector3(0.5f, 0.7f, 0.3f));
+            CreateBodyPart(root.transform, "Head", new Vector3(0, 1.775f, 0), new Vector3(0.35f, 0.35f, 0.35f));
+            CreateBodyPart(root.transform, "ArmLeft", new Vector3(-0.45f, 1.25f, 0), new Vector3(0.2f, 0.65f, 0.2f));
+            CreateBodyPart(root.transform, "ArmRight", new Vector3(0.45f, 1.25f, 0), new Vector3(0.2f, 0.65f, 0.2f));
+            CreateBodyPart(root.transform, "LegLeft", new Vector3(-0.15f, 0.45f, 0), new Vector3(0.25f, 0.9f, 0.25f));
+            CreateBodyPart(root.transform, "LegRight", new Vector3(0.15f, 0.45f, 0), new Vector3(0.25f, 0.9f, 0.25f));
 
             root.AddComponent<PlayerController>();
             return root;
+        }
+
+        private static void CreateBodyPart(Transform parent, string name, Vector3 localPosition, Vector3 localScale)
+        {
+            var part = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            part.name = name;
+            part.transform.SetParent(parent, false);
+            part.transform.localPosition = localPosition;
+            part.transform.localScale = localScale;
+            // Collision is handled entirely by the CharacterController above — per-part
+            // colliders would just fight it, so they're removed like Body/Head were before.
+            UnityEngine.Object.Destroy(part.GetComponent<Collider>());
+            MaterialUtil.ApplyLitColor(part.GetComponent<Renderer>(), Color.white);
         }
     }
 }
