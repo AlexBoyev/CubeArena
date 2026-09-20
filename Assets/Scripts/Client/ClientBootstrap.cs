@@ -21,6 +21,9 @@ namespace CubeArena.Client
         private string _currentBackendUrl;
 
         private Canvas _canvas;
+        private GameObject _mainMenuPanel;
+        private GameObject _optionsPanel;
+        private GameObject _aboutPanel;
         private GameObject _loginPanel;
         private GameObject _characterSelectPanel;
         private GameObject _connectingPanel;
@@ -87,30 +90,68 @@ namespace CubeArena.Client
         private void BuildUi()
         {
             _canvas = UiFactory.CreateCanvas();
+            BuildMainMenuPanel();
+            BuildOptionsPanel();
+            BuildAboutPanel();
             BuildLoginPanel();
             BuildCharacterSelectPanel();
             BuildConnectingPanel();
             BuildHud();
-            ShowOnly(_loginPanel);
+            ShowOnly(_mainMenuPanel);
+        }
+
+        private void BuildMainMenuPanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(340, 380));
+            _mainMenuPanel = panelRect.gameObject;
+            UiFactory.CreateText(panelRect, "Cube Arena", 32, new Vector2(0, 150), new Vector2(300, 44));
+
+            var buttonSize = new Vector2(280, 50);
+            UiFactory.CreateButton(panelRect, "Start Game (Online/LAN)", new Vector2(0, 65), OnStartGameClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "Options", new Vector2(0, 0), OnOptionsClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "About", new Vector2(0, -65), OnAboutClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "Exit", new Vector2(0, -130), OnExitClicked, buttonSize);
+        }
+
+        private void BuildOptionsPanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(340, 220));
+            _optionsPanel = panelRect.gameObject;
+            UiFactory.CreateText(panelRect, "Options", 24, new Vector2(0, 70), new Vector2(300, 40));
+            UiFactory.CreateText(panelRect, "Work in progress", 18, new Vector2(0, 0), new Vector2(300, 40));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -75), OnBackToMenuClicked);
+        }
+
+        private void BuildAboutPanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 260));
+            _aboutPanel = panelRect.gameObject;
+            UiFactory.CreateText(panelRect, "About", 24, new Vector2(0, 95), new Vector2(300, 40));
+            UiFactory.CreateText(panelRect,
+                "Cube Arena\nA 4-player multiplayer prototype.\n\n" +
+                "Server-authoritative movement, signed connect\ntickets, and a real dedicated game server.",
+                14, new Vector2(0, 10), new Vector2(340, 110));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -95), OnBackToMenuClicked);
         }
 
         private void BuildLoginPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 380));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 420));
             _loginPanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "Cube Arena", 28, new Vector2(0, 150), new Vector2(300, 40));
+            UiFactory.CreateText(panelRect, "Cube Arena", 28, new Vector2(0, 165), new Vector2(300, 40));
 
             // Editable so the same client build can point at a cloud-hosted backend or
             // a LAN host's local IP without rebuilding — CUBEARENA_BACKEND_URL only sets
             // the initial value here, and whatever's typed is remembered for next launch.
-            _serverField = UiFactory.CreateInputField(panelRect, "server address", new Vector2(0, 95));
+            _serverField = UiFactory.CreateInputField(panelRect, "server address", new Vector2(0, 110));
             _serverField.text = PlayerPrefs.GetString(BackendUrlPrefKey, _config.BackendUrl);
 
-            _emailField = UiFactory.CreateInputField(panelRect, "email", new Vector2(0, 40));
-            _passwordField = UiFactory.CreateInputField(panelRect, "password", new Vector2(0, -10), isPassword: true);
-            UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -65), OnRegisterClicked);
-            UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -65), OnLoginClicked);
-            _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -130), new Vector2(340, 50));
+            _emailField = UiFactory.CreateInputField(panelRect, "email", new Vector2(0, 55));
+            _passwordField = UiFactory.CreateInputField(panelRect, "password", new Vector2(0, 5), isPassword: true);
+            UiFactory.CreateButton(panelRect, "Register", new Vector2(-95, -50), OnRegisterClicked);
+            UiFactory.CreateButton(panelRect, "Login", new Vector2(95, -50), OnLoginClicked);
+            _loginStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -115), new Vector2(340, 50));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -180), OnBackToMenuClicked, new Vector2(120, 36));
         }
 
         // (Re)creates the auth/session clients if the server-address field has changed
@@ -161,11 +202,31 @@ namespace CubeArena.Client
 
         private void ShowOnly(GameObject panel)
         {
+            _mainMenuPanel.SetActive(panel == _mainMenuPanel);
+            _optionsPanel.SetActive(panel == _optionsPanel);
+            _aboutPanel.SetActive(panel == _aboutPanel);
             _loginPanel.SetActive(panel == _loginPanel);
             _characterSelectPanel.SetActive(panel == _characterSelectPanel);
             _connectingPanel.SetActive(panel == _connectingPanel);
             _hudPanel.SetActive(panel == _hudPanel);
             _minimap.SetActive(panel == _hudPanel);
+        }
+
+        private void OnStartGameClicked() => ShowOnly(_loginPanel);
+
+        private void OnOptionsClicked() => ShowOnly(_optionsPanel);
+
+        private void OnAboutClicked() => ShowOnly(_aboutPanel);
+
+        private void OnBackToMenuClicked() => ShowOnly(_mainMenuPanel);
+
+        private void OnExitClicked()
+        {
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
         }
 
         private async void OnRegisterClicked()

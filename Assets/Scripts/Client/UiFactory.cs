@@ -104,14 +104,14 @@ namespace CubeArena.Client
             return inputField;
         }
 
-        public static Button CreateButton(Transform parent, string label, Vector2 anchoredPosition, UnityEngine.Events.UnityAction onClick)
+        public static Button CreateButton(Transform parent, string label, Vector2 anchoredPosition, UnityEngine.Events.UnityAction onClick, Vector2? size = null)
         {
             var go = new GameObject($"Button_{label}", typeof(Image), typeof(Button));
             go.transform.SetParent(parent, false);
             var rect = go.GetComponent<RectTransform>();
             rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
             rect.anchoredPosition = anchoredPosition;
-            rect.sizeDelta = new Vector2(180, 44);
+            rect.sizeDelta = size ?? new Vector2(180, 44);
             go.GetComponent<Image>().color = new Color(0.2f, 0.5f, 0.9f);
 
             var textGo = new GameObject("Text", typeof(Text));
