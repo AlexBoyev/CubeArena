@@ -86,23 +86,21 @@ Locked decisions (see Phase 0 discussion, not to be silently revisited):
 ## Phase 7 status
 
 `SECURITY.md` and `HOSTING.md` are written, and `backend.yml`/`gameserver.yml`
-both build and push their Docker images to GHCR using the built-in
-`GITHUB_TOKEN` — no user credentials needed for that part.
+both build and push their Docker images to GHCR. `UNITY_LICENSE` is now set
+as a repo secret and `gameserver.yml` has been verified green end to end
+(GameCI activates the license, builds the real headless Linux server, and
+`docker/build-push-action` succeeds) — confirmed via a manual
+`workflow_dispatch` run on 2026-09-20. It gates itself on that secret's
+presence (`check-license` job) so it skips cleanly instead of failing red on
+a repo that hasn't added one yet.
 
-**The actual deploy is not done** — it genuinely can't be, from here. It
-needs:
+**The actual deploy is still not done** — it genuinely can't be, from here.
+It needs:
 
 1. A real VM from a cloud provider (an account, payment, and a provider
    choice are yours to make — `docs/HOSTING.md` tier 2 has cost estimates
    for a few options).
 2. A real domain name pointed at that VM (Caddy's automatic TLS needs one).
-3. `UNITY_LICENSE` (+ `UNITY_EMAIL`/`UNITY_PASSWORD`, or `UNITY_SERIAL` for
-   Pro) added as GitHub repo secrets, so `gameserver.yml` can actually build
-   the real Linux server in CI — see the workflow's header comment and
-   game-ci.org/docs/github/activation. Until that secret exists,
-   `gameserver.yml`'s job skips itself (`if: secrets.UNITY_LICENSE != '' ||
-   secrets.UNITY_SERIAL != ''`) instead of failing, so it doesn't sit
-   permanently red on a check nobody can act on yet.
 
-Once you have those three things, `docs/HOSTING.md`'s tier 2 section is a
+Once you have those two things, `docs/HOSTING.md`'s tier 2 section is a
 literal, copy-pasteable runbook for the rest.
