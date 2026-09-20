@@ -3,16 +3,16 @@
 # the compose stack's api service uses. Exists because this dev machine has
 # no Linux Dedicated Server Build Support (so it can't build/run
 # infra/docker/Dockerfile.gameserver locally) and no GHCR pull access to the
-# pre-built image (that package is currently private) — see CLAUDE.md.
+# pre-built image (that package is currently private) - see CLAUDE.md.
 #
-# Prerequisite: build the server once via Unity batch mode —
+# Prerequisite: build the server once via Unity batch mode -
 #   Unity.exe -batchmode -quit -projectPath <repo root> -executeMethod BuildScript.BuildWindowsDedicatedServer
 # (requires the Windows Dedicated Server Build Support module, installed via
 # Unity Hub: `install-modules --version 6000.5.5f1 --module windows-server`)
 
 $envPath = Join-Path $PSScriptRoot ".env"
 if (-not (Test-Path $envPath)) {
-    Write-Host "No .env found at $envPath — copy .env.example to .env first." -ForegroundColor Red
+    Write-Host "No .env found at $envPath - copy .env.example to .env first." -ForegroundColor Red
     exit 1
 }
 
@@ -28,7 +28,7 @@ $apiPort = Get-EnvValue "API_PORT" "8080"
 $fleetApiKey = Get-EnvValue "FLEET_API_KEY" ""
 
 if (-not $publicHost) {
-    Write-Host "PUBLIC_HOST is not set in .env — see docs/HOSTING.md Tier 0." -ForegroundColor Red
+    Write-Host "PUBLIC_HOST is not set in .env - see docs/HOSTING.md Tier 0." -ForegroundColor Red
     exit 1
 }
 if (-not $fleetApiKey) {
@@ -38,7 +38,7 @@ if (-not $fleetApiKey) {
 
 $exePath = Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) "Builds\WindowsServer\CubeArena.exe"
 if (-not (Test-Path $exePath)) {
-    Write-Host "No build found at $exePath — build it first (see this script's header comment)." -ForegroundColor Red
+    Write-Host "No build found at $exePath - build it first (see this script's header comment)." -ForegroundColor Red
     exit 1
 }
 

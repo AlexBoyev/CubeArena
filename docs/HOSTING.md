@@ -115,7 +115,15 @@ dedicated game server has **two ways to run**, both documented below:
    into the "server address" field, register/log in with a distinct
    account per player, then Quick Play. Each should land in a different
    coloured slot in the same match.
-10. **Shut down** when done: close the game server window (`Ctrl+C`), then
+10. **Package a client to hand to remote players**: `.\package-client.ps1`
+    (from `infra/compose/`) builds the client fresh and zips it into a
+    single `Builds/CubeArena-Client.zip`, with a `README.txt` inside
+    containing today's connect string. Share that one file however you
+    like (USB stick, cloud storage link, etc.) — the recipient just
+    unzips and runs `CubeArena.exe`, no Unity install needed on their end.
+    Re-run this any time `PUBLIC_HOST` changes or the client code changes,
+    since the connect string is baked into the README at package time.
+11. **Shut down** when done: close the game server window (`Ctrl+C`), then
     `docker compose down` (add `-v` only if you also want to wipe the
     Postgres volume, e.g. to reset all accounts).
 
@@ -138,6 +146,30 @@ New-NetFirewallRule -DisplayName "Cube Arena LAN" -Direction Inbound -Protocol U
 The most reliable end-to-end check, though, is simply step 7 above from an
 actual second machine's client — if a real player on the LAN connects and
 moves, the UDP path is proven.
+
+### Playing with people who aren't on your physical LAN
+
+Tier 0 as described needs everyone on the same physical network. If some
+players are elsewhere, the recommended option is still **not** a cloud VM
+(that's tier 2, for once the game is worth deploying) — it's a mesh VPN
+like [Tailscale](https://tailscale.com) (free for personal use):
+
+1. Install Tailscale on your machine and each remote player's machine; sign
+   in and join the same private network ("tailnet").
+2. Set `PUBLIC_HOST` in `.env` to your machine's Tailscale IP (`100.x.x.x`
+   — shown by `tailscale ip` or the Tailscale app) instead of your regular
+   LAN IP, then bring the stack up as usual.
+3. Everything else is identical — remote players paste the same connect
+   string into the client, exactly as if they were on your LAN, because as
+   far as the OS is concerned they now are.
+
+This keeps the same trust model `LAN_MODE` already assumes (plain HTTP is
+fine because the network is closed to outsiders) without exposing any port
+on your home router to the public internet, and without dealing with your
+home IP changing. Router port forwarding + dynamic DNS is the other classic
+option, but it exposes your home network directly to the internet and
+needs a dynamic-DNS hostname since home IPs aren't stable — Tailscale avoids
+both problems for free.
 
 ## Tier 1 — Local (`localhost`-only)
 

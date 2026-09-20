@@ -4,7 +4,7 @@
 
 $envPath = Join-Path $PSScriptRoot ".env"
 if (-not (Test-Path $envPath)) {
-    Write-Host "No .env found at $envPath — copy .env.example to .env first." -ForegroundColor Red
+    Write-Host "No .env found at $envPath - copy .env.example to .env first." -ForegroundColor Red
     exit 1
 }
 
@@ -27,18 +27,18 @@ $detectedIps = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinu
     Select-Object -ExpandProperty IPAddress
 
 Write-Host ""
-Write-Host "=== Cube Arena — LAN connect info ===" -ForegroundColor Cyan
+Write-Host "=== Cube Arena - LAN connect info ===" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Detected LAN IP(s) on this machine:"
 if ($detectedIps) {
     $detectedIps | ForEach-Object { Write-Host "  - $_" }
 } else {
-    Write-Host "  (none found — is this machine on a network?)" -ForegroundColor Yellow
+    Write-Host "  (none found - is this machine on a network?)" -ForegroundColor Yellow
 }
 Write-Host ""
 
 if (-not $publicHost) {
-    Write-Host "PUBLIC_HOST is not set in .env — set it to one of the IPs above." -ForegroundColor Red
+    Write-Host "PUBLIC_HOST is not set in .env - set it to one of the IPs above." -ForegroundColor Red
     exit 1
 }
 
