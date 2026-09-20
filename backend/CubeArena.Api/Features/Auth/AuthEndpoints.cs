@@ -93,6 +93,11 @@ public static class AuthEndpoints
 
     private static bool IsValidEmail(string email)
     {
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return false;
+        }
+
         try
         {
             _ = new MailAddress(email);

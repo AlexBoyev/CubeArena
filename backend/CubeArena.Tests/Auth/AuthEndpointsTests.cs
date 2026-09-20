@@ -19,6 +19,19 @@ public class AuthEndpointsTests(PostgresApiFactory factory) : IClassFixture<Post
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not-an-email")]
+    public async Task Register_ReturnsBadRequest_ForInvalidEmail(string email)
+    {
+        var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/auth/register", new RegisterRequest(email, "password123"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     [Fact]
     public async Task Register_ReturnsConflict_ForDuplicateEmail()
     {
