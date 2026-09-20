@@ -1,17 +1,79 @@
 name: Client
 
-# Skeleton only. The real Windows client build lands in Phase 7
-# (docs/ROADMAP.md), triggered on version tags.
+# Requires UNITY_LICENSE (see gameserver.yml's header comment for details) -
+# skips cleanly rather than failing if that secret isn't set, same pattern
+# as gameserver.yml.
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+  push:
+    branches: [master, main]
+    paths:
+      - "Assets/**"
+      - "Packages/**"
+      - "ProjectSettings/**"
+      - ".github/workflows/client.yml"
 
 jobs:
-  build:
+  check-license:
     runs-on: ubuntu-latest
+    outputs:
+      has-license: ${{ steps.check.outputs.has-license }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "$UNITY_LICENSE" ] || [ -n "$UNITY_SERIAL" ]; then
+            echo "has-license=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-license=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+
+  build-windows-client:
+    needs: check-license
+    if: needs.check-license.outputs.has-license == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - run: echo "Windows client build pipeline not implemented yet (Phase 7)."
+        with:
+          lfs: true
+
+      - uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-WindowsClient-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: Library-WindowsClient-
+
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: 6000.5.5f1
+          targetPlatform: StandaloneWindows64
+          buildMethod: BuildScript.BuildWindowsClient
+          buildsPath: Builds/WindowsClient
+
+      - name: Zip the client
+        run: |
+          cd Builds/WindowsClient
+          zip -r ../../CubeArena-Client.zip .
+
+      # Publishes to a single, stable "latest-client" release so there's
+      # always one predictable download link - overwritten on every push
+      # to master, not a new release per push.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-client
+          name: Cube Arena - latest client build
+          body: |
+            Automatically rebuilt from `master` (commit ${{ github.sha }}).
+            Unzip and run `CubeArena.exe`. Paste your host's server address
+            into the login screen's "server address" field - see
+            docs/HOSTING.md for how a host sets that up.
+          files: CubeArena-Client.zip

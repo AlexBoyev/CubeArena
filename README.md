@@ -172,23 +172,23 @@ is the default** — everything on one machine, reachable by real clients on
 your LAN (or, with [Tailscale](https://tailscale.com), by anyone regardless
 of physical location) — no cloud account, no domain, no spending.
 
-```powershell
-cd infra/compose
-# .env already has PUBLIC_HOST/LAN_MODE set for this machine — see .env.example
-# to set up on a different machine.
+**Easiest**: double-click `infra/compose/Start-CubeArena-Host.bat` — brings
+up the backend, builds the dedicated server if needed, and runs it, all in
+one window.
 
+Or manually, from `infra/compose/` (`.env` already has `PUBLIC_HOST`/
+`LAN_MODE` set for this machine — see `.env.example` to set up elsewhere):
+
+```powershell
 docker compose up -d postgres api        # backend
 .\run-gameserver-native.ps1               # dedicated server (native process)
 .\print-connect-info.ps1                  # prints the connect string to hand players
 ```
 
-To package a single file for players to run (no Unity install needed on
-their end):
-
-```powershell
-.\package-client.ps1
-# -> Builds/CubeArena-Client.zip, with a README.txt containing the connect string
-```
+To get a client for players to run (no Unity install needed on their end),
+either build one locally with `.\package-client.ps1` (bakes in today's
+connect string), or grab the one CI rebuilds on every push to `master`:
+the [`latest-client` release](../../releases/tag/latest-client).
 
 Tier 2 (a real internet-reachable deploy on a cloud VM, once the game is
 worth deploying that far) and Tier 3 (managed/scaling sketch) are also

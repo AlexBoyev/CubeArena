@@ -58,6 +58,15 @@ dedicated game server has **two ways to run**, both documented below:
   string to hand each player (paste into the client's login-screen "server
   address" field — no environment variables or rebuilds needed on their
   end).
+- **One-click start**: `infra/compose/Start-CubeArena-Host.bat` — double-click
+  it. It brings up Postgres + the API, builds the dedicated server if it
+  hasn't been built yet, waits for the API to report healthy, prints the
+  connect string, then runs the server in that same window (leave it open
+  while hosting; closing it stops the server). This replaces steps 3-7 of
+  the runbook below with one double-click. (Plain `.ps1` files don't run on
+  double-click in Windows Explorer by default — that's what the `.bat`
+  wrapper is for; `start-host.ps1` has the actual logic if you want to read
+  or adapt it.)
 
 ### Tier 0 runbook: bring the stack up and connect four clients
 
@@ -115,14 +124,24 @@ dedicated game server has **two ways to run**, both documented below:
    into the "server address" field, register/log in with a distinct
    account per player, then Quick Play. Each should land in a different
    coloured slot in the same match.
-10. **Package a client to hand to remote players**: `.\package-client.ps1`
-    (from `infra/compose/`) builds the client fresh and zips it into a
-    single `Builds/CubeArena-Client.zip`, with a `README.txt` inside
-    containing today's connect string. Share that one file however you
-    like (USB stick, cloud storage link, etc.) — the recipient just
-    unzips and runs `CubeArena.exe`, no Unity install needed on their end.
-    Re-run this any time `PUBLIC_HOST` changes or the client code changes,
-    since the connect string is baked into the README at package time.
+10. **Package a client to hand to remote players.** Two ways to get the
+    zip, pick whichever's more convenient:
+    - **Locally**: `.\package-client.ps1` (from `infra/compose/`) builds
+      the client fresh and zips it into a single
+      `Builds/CubeArena-Client.zip`, with a `README.txt` inside containing
+      *today's* connect string (baked in at package time — re-run this any
+      time `PUBLIC_HOST` changes). Fastest way to get a zip with the
+      correct address already in it.
+    - **From CI**: `.github/workflows/client.yml` rebuilds the client on
+      every push to `master` and publishes it as the
+      [`latest-client` GitHub release](../../releases/tag/latest-client) —
+      no local Unity build needed at all. That zip doesn't know your
+      `PUBLIC_HOST`, so tell players the server address separately (or drop
+      a copy of `print-connect-info.ps1`'s output next to it).
+
+    Share whichever zip however you like (USB stick, cloud storage link,
+    the release link) — the recipient just unzips and runs
+    `CubeArena.exe`, no Unity install needed on their end.
 11. **Shut down** when done: close the game server window (`Ctrl+C`), then
     `docker compose down` (add `-v` only if you also want to wipe the
     Postgres volume, e.g. to reset all accounts).
