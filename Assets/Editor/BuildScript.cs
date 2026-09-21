@@ -1,4 +1,5 @@
 using System;
+using CubeArena.Shared;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
@@ -7,7 +8,10 @@ using UnityEngine;
 // from .github/workflows/gameserver.yml (GameCI's unity-builder action).
 public static class BuildScript
 {
-    private const string ServerScenePath = "Assets/Scenes/SampleScene.unity";
+    // Shared with ServerBootstrap/ClientBootstrap's auto-bootstrap scene check
+    // (CubeArena.Shared.BootConfig) — this is the one scene every real build
+    // includes, and the one scene name that's allowed to auto-boot the game.
+    private static readonly string ServerScenePath = $"Assets/Scenes/{BootConfig.BootSceneName}.unity";
 
     public static void BuildLinuxDedicatedServer() =>
         BuildDedicatedServer(BuildTarget.StandaloneLinux64, "Builds/LinuxServer/CubeArena.x86_64");

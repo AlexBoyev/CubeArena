@@ -39,33 +39,78 @@ a mesh-reference change rather than a rebuild:
   "Thief prefab with animations") — `ThiefModel_Placeholder` exists as a
   model reference only, one shared material, no tint applied.
 
-### Sleep-clip preview
+### Sleep-clip preview — decided: candidate 4
+
+**Chosen**: candidate 4, the custom seated + head-on-arms lean. The three
+Mixamo clips (Laying Sleeping, Sleeping Idle 1/2) are all lying-down poses —
+confirmed by seeing them actually play on the placeholder giant, floating
+face-up/face-down at floor level regardless of the chair/table underneath —
+not a fit for "asleep at the kitchen table." `Laying Sleeping` is kept
+in `Assets/ThirdParty/Mixamo-SleepClips-Placeholder/` for a future bedroom
+level, per the master prompt's own note.
 
 `Assets/Scenes/SleepClipPreview.unity` (built via
-`Assets/Editor/PocketHeist/SleepPreviewBuilder.cs`, run once via
-`-executeMethod PocketHeist.EditorTools.SleepPreviewBuilder.Build` — re-run it
-any time after changing the script, Unity closed first per `CLAUDE.md`) seats
-four `GiantModel_Placeholder` instances at identical kitchen-table greyboxes
+`Assets/Editor/PocketHeist/SleepPreviewBuilder.cs`, run via `-executeMethod
+PocketHeist.EditorTools.SleepPreviewBuilder.Build`; screenshots verified via
+`Assets/Editor/PocketHeist/SleepPreviewScreenshotter.cs`, `.Capture` — see the
+"Two hard-won bugs" note below before touching either) seats four
+`GiantModel_Placeholder` instances at identical kitchen-table greyboxes
 (dimensions from `docs/GAME_DESIGN.md` section 2), each labeled and playing a
-different candidate:
+different candidate — 1-3 the unmodified Mixamo clips, 4 the chosen custom
+pose: a 2-layer `Animator` — base layer `Sitting_Idle_Loop` (Quaternius
+library, sets the seated leg/hip pose), upper-body layer (avatar-masked to
+spine/chest/head/arms/fingers, Override blend) playing a custom-authored
+Humanoid muscle-curve clip (`Custom_HeadOnArms.anim`, built directly via
+`AnimationClip.SetCurve` against `HumanTrait.MuscleName` entries — no stock
+clip in the 86-clip library actually has a "head down on folded arms" pose)
+with a forward spine/chest/neck/head lean, arms brought down and forward,
+and a slow 4-second-cycle breathing oscillation on the chest muscle.
 
-1. **Laying Sleeping** (Mixamo, unmodified)
-2. **Sleeping Idle 1** (Mixamo, unmodified)
-3. **Sleeping Idle 2** (Mixamo, unmodified)
-4. **Custom — experimental**: a 2-layer `Animator` — base layer
-   `Sitting_Idle_Loop` (from the Quaternius library, sets the seated leg/hip
-   pose), upper-body layer (avatar-masked to spine/chest/head/arms/fingers,
-   Override blend, full weight) playing `PickUp_Table` for its forward torso
-   lean. This is a constructed approximation, not a clip authored for "head on
-   arms" — picked because it was the closest forward-lean candidate among the
-   library's 86 clips, not because it's known to look right. Labeled
-   "experimental" in the scene itself for that reason.
+Verified in an actual Play-mode session (not just an edit-time pose sample)
+via a screenshot per station — `applyRootMotion` off, giant ground-rooted so
+the seated pose reads correctly, table/chair at the real 18.75m/11.25m
+heights, camera narrow enough not to catch neighbouring stations' labels.
+First attempt at the lean muscle values folded the giant almost completely
+to the floor (spine+chest+upperChest values were roughly 2-3x too strong,
+stacking additively) — cut down and re-verified before settling on this.
 
-Open the scene in the Editor and press Play (or scrub each `Animator` in the
-Animation/Animator windows) to judge. Not yet deleted per the master prompt's
-own instruction to keep working artifacts until a decision is made — safe to
-delete `SleepPreviewBuilder.cs`, the four `Preview_*.controller` assets, and
-the scene itself once a clip is chosen and real level work starts.
+**Two hard-won bugs, worth knowing before touching this again:**
+
+1. **Domain reload wipes `EditorApplication.update` subscriptions made before
+   entering Play mode.** `SleepPreviewScreenshotter.Capture()` used to
+   subscribe then set `EditorApplication.isPlaying = true` in the same call —
+   the ensuing domain reload silently dropped that subscription, so the
+   settle-timer callback never fired again and the process just sat in Play
+   mode forever with no error. Fixed with `SessionState` (survives domain
+   reloads) plus `[InitializeOnLoadMethod]`-style re-subscription in a static
+   constructor, which Unity guarantees runs after every reload.
+2. **A `-batchmode -nographics` process and a `-batchmode` (real graphics)
+   process don't share shader/material state cleanly.** Building the scene
+   with `-nographics` (fast, used everywhere else this session) and then
+   capturing screenshots in a *separate* real-graphics process consistently
+   rendered every character in Unity's magenta missing-material fallback,
+   even though the material tested valid (shader/textures/reload all
+   confirmed via logging) immediately after creation in the build process.
+   Neither asset re-creation, forced `AssetDatabase.SaveAssets()`, nor a
+   from-scratch material file fixed it. Running the *build* step without
+   `-nographics` too — matching the capture step's graphics context — fixed
+   it immediately. Any future tool in this project that builds assets in one
+   batch process and expects to *render* them (not just import/compile) in
+   another should build without `-nographics` if the render step also runs
+   without it.
+
+Not yet deleted per the master prompt's own instruction to keep working
+artifacts until a decision is made — now that one is, safe to delete
+`SleepPreviewBuilder.cs`, `SleepPreviewScreenshotter.cs`, the generated
+`Preview_*.controller`/`Custom_HeadOnArms.anim` assets, and the scene itself
+once Milestone 2's real level work makes this specific comparison moot.
+
+**Known cosmetic gap, not fixed here**: the placeholder material only maps
+the FBX's skin textures onto every renderer, so the giant currently renders
+shirtless/in briefs rather than clothed — the source model likely has a
+separate clothing material slot this script doesn't handle. Cosmetic only,
+doesn't block judging the pose; revisit whenever this placeholder is
+actually replaced (see "Placeholder character structure" above).
 
 ### Vertex-colour note (Kenney Furniture Kit)
 

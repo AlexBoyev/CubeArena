@@ -87,6 +87,16 @@ namespace CubeArena.Client
         private static void AutoBootstrap()
         {
 #if !UNITY_SERVER
+            // Real builds only ever include BootConfig.BootSceneName (see
+            // Editor/BuildScript.cs), so this check is a no-op there — it only
+            // matters in the Editor, where opening any other scene (a preview/
+            // test scene) must play normally instead of also standing up the
+            // whole client on top of it.
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != BootConfig.BootSceneName)
+            {
+                return;
+            }
+
             var go = new GameObject(nameof(ClientBootstrap));
             DontDestroyOnLoad(go);
             go.AddComponent<ClientBootstrap>();
