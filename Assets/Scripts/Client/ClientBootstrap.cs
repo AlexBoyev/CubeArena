@@ -312,8 +312,8 @@ namespace CubeArena.Client
             var isHost = IsLobbyHost(networkManager);
             var count = networkManager.ConnectedClientsIds.Count;
             _lobbyStatusText.text = isHost
-                ? $"{count}/4 connected — start when everyone's ready."
-                : $"{count}/4 connected — waiting for the host to start...";
+                ? $"{count}/6 connected — start when everyone's ready."
+                : $"{count}/6 connected — waiting for the host to start...";
             _startMatchButton.gameObject.SetActive(isHost);
         }
 
@@ -523,7 +523,7 @@ namespace CubeArena.Client
             _aboutPanel = panelRect.gameObject;
             UiFactory.CreateText(panelRect, "About", 26, new Vector2(0, 95), new Vector2(300, 40));
             UiFactory.CreateText(panelRect,
-                "Cube Arena\nA 4-player multiplayer prototype.\n\n" +
+                "Cube Arena\nA 6-player multiplayer prototype.\n\n" +
                 "Server-authoritative movement, signed connect\ntickets, and a real dedicated game server.",
                 14, new Vector2(0, 10), new Vector2(340, 110));
             UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -95), OnBackClicked);
@@ -636,15 +636,17 @@ namespace CubeArena.Client
         // overlay like Pause/Lobby, not part of ShowOnly's exclusive set.
         private void BuildTabScoreboardPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(320, 260));
+            // Grown from the original 4-player sizing (320x260, 160-tall columns) to fit
+            // up to 6 rows comfortably without clipping.
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(320, 340));
             _tabScoreboardPanel = panelRect.gameObject;
             _tabScoreboardPanel.SetActive(false);
-            UiFactory.CreateText(panelRect, "Scoreboard", 24, new Vector2(0, 100), new Vector2(280, 36));
+            UiFactory.CreateText(panelRect, "Scoreboard", 24, new Vector2(0, 140), new Vector2(280, 36));
 
-            _tabNamesText = UiFactory.CreateText(panelRect, "", 16, new Vector2(-70, 20), new Vector2(160, 160));
+            _tabNamesText = UiFactory.CreateText(panelRect, "", 16, new Vector2(-70, 0), new Vector2(160, 220));
             _tabNamesText.alignment = TextAnchor.UpperLeft;
 
-            _tabScoresText = UiFactory.CreateText(panelRect, "", 16, new Vector2(90, 20), new Vector2(80, 160));
+            _tabScoresText = UiFactory.CreateText(panelRect, "", 16, new Vector2(90, 0), new Vector2(80, 220));
             _tabScoresText.alignment = TextAnchor.UpperRight;
         }
 
@@ -655,18 +657,20 @@ namespace CubeArena.Client
         // every PlayerController is gone by the time this shows).
         private void BuildGameOverPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 380));
+            // Grown from the original 4-player sizing (380x380, 160-tall columns) to fit
+            // up to 6 rows comfortably without clipping.
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 480));
             _gameOverPanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "Match Over", 28, new Vector2(0, 150), new Vector2(320, 40));
-            _gameOverResultText = UiFactory.CreateText(panelRect, "", 16, new Vector2(0, 105), new Vector2(340, 60));
+            UiFactory.CreateText(panelRect, "Match Over", 28, new Vector2(0, 200), new Vector2(320, 40));
+            _gameOverResultText = UiFactory.CreateText(panelRect, "", 16, new Vector2(0, 150), new Vector2(340, 70));
 
-            UiFactory.CreateText(panelRect, "Final Scores", 18, new Vector2(0, 55), new Vector2(300, 30));
-            _gameOverNamesText = UiFactory.CreateText(panelRect, "", 16, new Vector2(-70, -25), new Vector2(160, 160));
+            UiFactory.CreateText(panelRect, "Final Scores", 18, new Vector2(0, 95), new Vector2(300, 30));
+            _gameOverNamesText = UiFactory.CreateText(panelRect, "", 16, new Vector2(-70, -30), new Vector2(160, 220));
             _gameOverNamesText.alignment = TextAnchor.UpperLeft;
-            _gameOverScoresText = UiFactory.CreateText(panelRect, "", 16, new Vector2(90, -25), new Vector2(80, 160));
+            _gameOverScoresText = UiFactory.CreateText(panelRect, "", 16, new Vector2(90, -30), new Vector2(80, 220));
             _gameOverScoresText.alignment = TextAnchor.UpperRight;
 
-            UiFactory.CreateButton(panelRect, "Continue", new Vector2(0, -165), OnGameOverContinueClicked, new Vector2(200, 50));
+            UiFactory.CreateButton(panelRect, "Continue", new Vector2(0, -200), OnGameOverContinueClicked, new Vector2(200, 50));
         }
 
         private void ShowOnly(GameObject panel)

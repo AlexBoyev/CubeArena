@@ -22,7 +22,7 @@ namespace CubeArena.Server
                 FleetApiKey = GetEnv("CUBEARENA_FLEET_API_KEY", ""),
                 AdvertiseHost = GetEnv("CUBEARENA_ADVERTISE_HOST", "127.0.0.1"),
                 ListenPort = ushort.Parse(GetEnv("CUBEARENA_LISTEN_PORT", "7777")),
-                Capacity = int.Parse(GetEnv("CUBEARENA_CAPACITY", "4")),
+                Capacity = int.Parse(GetEnv("CUBEARENA_CAPACITY", "6")),
                 TicketIssuer = GetEnv("CUBEARENA_TICKET_ISSUER", "cubearena-api"),
                 TicketAudience = GetEnv("CUBEARENA_TICKET_AUDIENCE", "gameserver"),
                 TicketKeyId = GetEnv("CUBEARENA_TICKET_KEY_ID", "cubearena-ticket-key-1")

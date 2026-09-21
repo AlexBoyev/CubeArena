@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace CubeArena.Api.Features.Fleet;
 
-public record RegisterServerRequest(string Host, int Port, int Capacity = 4);
+public record RegisterServerRequest(string Host, int Port, int Capacity = 6);
 public record RegisterServerResponse(Guid GameServerId, Guid SessionId);
 public record HeartbeatRequest(Guid GameServerId, int PlayerCount);
 public record SlotSessionRequest(Guid SessionId, Guid UserId);

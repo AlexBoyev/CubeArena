@@ -74,7 +74,7 @@ services:
       # LAN party, not "localhost" or a container-internal name.
       CUBEARENA_ADVERTISE_HOST: ${PUBLIC_HOST:?PUBLIC_HOST must be set in .env (your machine's LAN IP) — see docs/HOSTING.md Tier 0}
       CUBEARENA_LISTEN_PORT: ${GAMESERVER_PORT:-7777}
-      CUBEARENA_CAPACITY: 4
+      CUBEARENA_CAPACITY: 6
     ports:
       - "${GAMESERVER_PORT:-7777}:7777/udp"
 

@@ -22,7 +22,7 @@ public class SessionEndpointsTests(PostgresApiFactory factory) : IClassFixture<P
         return client;
     }
 
-    private async Task RegisterAGameServerAsync(string host = "127.0.0.1", int port = 9999, int capacity = 4)
+    private async Task RegisterAGameServerAsync(string host = "127.0.0.1", int port = 9999, int capacity = 6)
     {
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Fleet-Api-Key", TestFactoryExtensions.TestFleetApiKey);
@@ -51,7 +51,7 @@ public class SessionEndpointsTests(PostgresApiFactory factory) : IClassFixture<P
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<QuickplayResponse>();
         Assert.False(string.IsNullOrEmpty(body!.Ticket));
-        Assert.InRange(body.SlotIndex, 0, 3);
+        Assert.InRange(body.SlotIndex, 0, 5);
     }
 
     [Fact]

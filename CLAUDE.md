@@ -1,6 +1,6 @@
 # CubeArena
 
-4-player multiplayer prototype. See `CUBE_ARENA_PROMPT.md` for the full brief
+6-player multiplayer prototype. See `CUBE_ARENA_PROMPT.md` for the full brief
 and `docs/ARCHITECTURE.md` / `docs/ROADMAP.md` for the current design and phase
 plan.
 

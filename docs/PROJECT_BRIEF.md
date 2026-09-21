@@ -8,7 +8,7 @@ repo root; for full design detail see `docs/ARCHITECTURE.md`,
 
 ## What it is
 
-A 4-player multiplayer arena prototype, built solo with heavy AI-assisted
+A 6-player multiplayer arena prototype, built solo with heavy AI-assisted
 iteration. Players connect to a dedicated game server, wait in a lobby,
 then one round runs on a 5-minute clock: move around an obstacle-course
 arena, collect gold pickups for points, whoever has the most when time
@@ -80,7 +80,7 @@ runs out (or the match is vote-ended early) wins.
   input/camera, doesn't affect the match for anyone else); a rejoin system
   that reconnects you into the same still-running match with your score
   preserved if you disconnect mid-match.
-- Nameplates, per-slot colors (red/blue/green/yellow, also the default
+- Nameplates, per-slot colors (red/blue/green/yellow/purple/orange, also the default
   display name if left blank), nameplate billboarding.
 - HP/Mana/Stamina bars in the HUD — Stamina is real (drives sprint); HP and
   Mana are deliberate placeholders (`PlayerController.Health`/a similar

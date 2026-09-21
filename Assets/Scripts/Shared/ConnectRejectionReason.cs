@@ -11,6 +11,10 @@ namespace CubeArena.Shared
         WrongAudience,
         WrongSession,
         ReplayedJti,
-        ServerFull
+        ServerFull,
+        // A malformed/stale ticket claiming a slot outside 0..capacity-1 — previously
+        // this degraded silently instead of failing loudly (PlayerColors/SpawnPoints both
+        // clamp out-of-range slots to the last valid one rather than erroring).
+        InvalidSlot
     }
 }

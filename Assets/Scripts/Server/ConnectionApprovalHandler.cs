@@ -45,6 +45,12 @@ namespace CubeArena.Server
                 return;
             }
 
+            if (result.SlotIndex < 0 || result.SlotIndex >= _capacity)
+            {
+                Reject(response, ConnectRejectionReason.InvalidSlot);
+                return;
+            }
+
             _usedJti.Add(result.Jti);
 
             response.Approved = true;

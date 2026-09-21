@@ -379,6 +379,6 @@ they're a perfectly good fit for the *backend API* (which is pure HTTP).
      usage/allocation-based — Unity's own console has current rates; budget
      is highly workload-dependent, so no single number is meaningful here.
 
-For a 4-player prototype, tier 3 is very likely overkill — it's included so
+For a 6-player prototype, tier 3 is very likely overkill — it's included so
 the architecture doesn't paint itself into a corner if this ever needs to
 scale, not because it's the recommended next step after tier 2.

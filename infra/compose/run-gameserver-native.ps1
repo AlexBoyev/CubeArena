@@ -46,7 +46,7 @@ $env:CUBEARENA_BACKEND_URL = "http://localhost:$apiPort"
 $env:CUBEARENA_FLEET_API_KEY = $fleetApiKey
 $env:CUBEARENA_ADVERTISE_HOST = $publicHost
 $env:CUBEARENA_LISTEN_PORT = $gameserverPort
-$env:CUBEARENA_CAPACITY = "4"
+$env:CUBEARENA_CAPACITY = "6"
 
 Write-Host "Starting dedicated server: advertising $publicHost`:$gameserverPort, backend $($env:CUBEARENA_BACKEND_URL)" -ForegroundColor Cyan
 & $exePath -batchmode -nographics

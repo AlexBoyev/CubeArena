@@ -106,6 +106,23 @@ public class SessionServiceTests
     }
 
     [Fact]
+    public async Task QuickplayAsync_RejectsTheSeventhPlayer_OnA6CapacityServer()
+    {
+        var (_, sessions, fleet, _) = CreateServices();
+        await fleet.RegisterAsync("game-server-1", 7777, capacity: 6, CancellationToken.None);
+
+        for (var i = 0; i < 6; i++)
+        {
+            var result = await sessions.QuickplayAsync(Guid.NewGuid(), CancellationToken.None);
+            Assert.Equal(QuickplayOutcome.Success, result.Outcome);
+        }
+
+        var seventh = await sessions.QuickplayAsync(Guid.NewGuid(), CancellationToken.None);
+
+        Assert.Equal(QuickplayOutcome.NoCapacity, seventh.Outcome);
+    }
+
+    [Fact]
     public async Task QuickplayAsync_ReusesAnExpiredSlot_AfterItsReservationLapses()
     {
         var (_, sessions, fleet, time) = CreateServices();

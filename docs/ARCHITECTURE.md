@@ -122,7 +122,7 @@ sequenceDiagram
     A-->>G: public keys (cached by G)
 
     C->>A: POST /sessions/quickplay (Bearer accessToken)
-    A->>A: find session with <4 players, or allocate one
+    A->>A: find session with <6 players, or allocate one
     A->>A: reserve slot, 60s expiry
     A-->>C: { host, port, sessionId, ticket, slotIndex }
 
@@ -130,7 +130,7 @@ sequenceDiagram
     G->>G: verify signature + exp (offline, public key only)
     G->>G: check aud=="gameserver" && sid==self
     G->>G: check jti not in local used-set; add it
-    G->>G: check current players < 4
+    G->>G: check current players < 6
     alt all checks pass
         G-->>C: connection approved, slotIndex assigned
     else any check fails

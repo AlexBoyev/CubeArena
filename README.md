@@ -1,6 +1,6 @@
 # Cube Arena
 
-A 4-player multiplayer prototype built to exercise real infrastructure —
+A 6-player multiplayer prototype built to exercise real infrastructure —
 authoritative netcode, custom auth, signed connect tickets, and a real
 dedicated-server fleet — with deliberately minimal gameplay on top. See
 `CUBE_ARENA_PROMPT.md` for the original brief this project follows.
@@ -22,7 +22,7 @@ and persistence of match results are explicitly out of scope.
 
 ## What it is
 
-Four players register an account, log in, and click "Quick Play." The
+Up to six players register an account, log in, and click "Quick Play." The
 backend finds (or spins up) a session with a free slot, issues each player
 a short-lived signed ticket, and hands back the address of a real dedicated
 game server process. The client connects to that server over UDP; the
@@ -88,7 +88,7 @@ boot. Full component diagram, sequence diagram, and threat model:
 - **Connect tickets are asymmetrically signed (ES256).** The private key
   never leaves the backend; the game server fetches only the public key
   from `/.well-known/jwks.json` at boot. A ticket is `aud=gameserver`,
-  `sid=<sessionId>`, `sub=<userId>`, `slot=<0..3>`, single-use `jti`,
+  `sid=<sessionId>`, `sub=<userId>`, `slot=<0..5>`, single-use `jti`,
   60-second expiry — verified entirely offline by the game server in
   `ConnectionApprovalCallback`, no round-trip to the backend needed per
   connection.
@@ -126,8 +126,8 @@ objective now:
 - **Character**: a blocky humanoid (torso/head/arms/legs, all primitive
   cubes) with a walk-cycle limb swing and a nameplate showing the player's
   chosen display name.
-- **Colours**: four fixed slots — red, blue, green, yellow — assigned by
-  the server from the connect ticket's `slot` claim.
+- **Colours**: six fixed slots — red, blue, green, yellow, purple, orange —
+  assigned by the server from the connect ticket's `slot` claim.
 - **Movement**: WASD at 5 m/s, server-authoritative at a 30Hz tick with
   client-side prediction/reconciliation. Space to jump, Ctrl to crouch
   (fits under low obstacles), C to crawl (for the lowest tunnels — crouch
