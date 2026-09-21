@@ -14,6 +14,22 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole();
 
+// Method/path/status/duration for every request — there was previously no visibility
+// into what actually hit the API at all beyond what each endpoint chose to log itself.
+// Deliberately NOT logging request/response bodies (the default `HttpLoggingFields` also
+// excludes them, but this is explicit on purpose): /auth/login and /auth/register carry
+// passwords in the request body, so body logging must stay off here.
+builder.Services.AddHttpLogging(o =>
+{
+    o.LoggingFields = Microsoft.AspNetCore.HttpLogging.HttpLoggingFields.RequestPropertiesAndHeaders
+        | Microsoft.AspNetCore.HttpLogging.HttpLoggingFields.ResponsePropertiesAndHeaders;
+});
+
+// A global fallback so an unhandled exception anywhere returns a consistent
+// application/problem+json response (and gets logged) instead of falling through to
+// whatever the framework's bare default happens to be for that environment.
+builder.Services.AddProblemDetails();
+
 var postgresConnectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("Missing ConnectionStrings:Postgres configuration.");
 
@@ -90,6 +106,11 @@ if (!app.Environment.IsEnvironment("Testing"))
     using var scope = app.Services.CreateScope();
     scope.ServiceProvider.GetRequiredService<CubeArenaDbContext>().Database.Migrate();
 }
+
+// Both as early as possible: the exception handler needs to wrap everything below it to
+// actually catch failures from it, and request logging should cover the full pipeline.
+app.UseExceptionHandler();
+app.UseHttpLogging();
 
 app.UseRateLimiter();
 app.UseAuthentication();
