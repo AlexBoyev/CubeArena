@@ -50,7 +50,7 @@ two build targets" rule.
 | Auth model | Custom (hand-rolled users + refresh-token table), not ASP.NET Core Identity |
 | Hosting target (near-term) | Local only, via `docker compose`, through Phase 6 |
 | Source control | https://github.com/AlexBoyev/CubeArena |
-| Build modules installed (this dev machine) | Windows Standalone, WebGL. **Not installed:** Windows/Linux Dedicated Server Build Support — local dedicated-server builds aren't currently possible here; GameCI's CI image builds the real Linux server (see `.github/workflows/gameserver.yml`) |
+| Build modules installed (this dev machine) | Windows Standalone, WebGL, **Windows Dedicated Server Build Support** — local Windows dedicated-server builds work (`BuildScript.BuildWindowsDedicatedServer`, used by Tier 0 hosting). **Not installed:** Linux Dedicated Server Build Support — GameCI's CI image builds the real Linux server (see `.github/workflows/gameserver.yml`) |
 
 **Phase 4 platform findings, worth knowing before touching server networking code:**
 

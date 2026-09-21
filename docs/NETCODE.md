@@ -118,6 +118,22 @@ Every crate (`CrateController.CreateTemplate`) carries:
   already moving under server-authoritative physics instead of restarting
   from zero velocity.
 
+### Known limitation: single-owner authority can't support multi-carrier loot
+
+`NetworkObject.ChangeOwnership()` gives an object exactly one owner at a
+time, which is what "authority moves to whoever's holding it" depends on
+above. Pocket Heist's loot-carry mechanic needs the opposite: 2-5 players
+gripping the *same* object simultaneously, server-averaging their combined
+input intent while carrying (see `POCKET_HEIST_MASTER_PROMPT.md` sections 7
+and 13) — there's no single "owner" to hand authority to. This
+`CrateController` pattern is left as-is for now (it's still correct for a
+single-grabber prop); a loot-carry object will need a genuinely different
+authority model — most likely staying server-owned/server-authoritative
+permanently, with the server itself reading and averaging each gripping
+client's input via ServerRpc rather than transferring ownership at all. That
+redesign belongs in the Milestone 3 plan (`docs/ROADMAP.md`/the master
+prompt), not here.
+
 ### Confirmed gotcha: ownership transfer teleports
 
 `NetworkObject.ChangeOwnership()` forces `NetworkTransform` through a full
@@ -174,6 +190,14 @@ connection (to the game server), so its numbers *are* that client's own
 bandwidth; on the server the driver is shared across every connection, so its
 numbers are the aggregate across all connected clients, not a per-client
 breakdown.
+
+This gives total bytes/bandwidth per connection, not a *per-object*
+breakdown (e.g. "how many bytes does this one crate's `NetworkTransform`
+cost"). If that finer-grained view is ever needed, it's still available —
+run a single non-headless client (a normal windowed build or the Editor)
+with `com.unity.multiplayer.tools`'s Runtime Net Stats Monitor overlay
+visible; its UI Toolkit component works fine outside a headless build, it's
+only unusable *there*.
 
 ### Load test setup
 
