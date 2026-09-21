@@ -1,8 +1,17 @@
-# CubeArena
+# Pocket Heist (formerly Cube Arena)
 
-6-player multiplayer prototype. See `CUBE_ARENA_PROMPT.md` for the full brief
-and `docs/ARCHITECTURE.md` / `docs/ROADMAP.md` for the current design and phase
-plan.
+A 2-6 player co-op heist game: thumb-sized thieves rob a sleeping giant's
+house. Built on the Cube Arena prototype's infrastructure (backend, netcode,
+fleet, hosting) with the gameplay replaced. See
+`POCKET_HEIST_MASTER_PROMPT.md` for the full pivot brief,
+`docs/GAME_DESIGN.md` for the living design reference (loop, world scale,
+carry mechanics, noise model, the giant's state machine), and
+`docs/ARCHITECTURE.md` / `docs/ROADMAP.md` for the backend/netcode design and
+build history. `CUBE_ARENA_PROMPT.md` is kept as the original brief, a
+historical record of the prototype this pivoted from.
+
+Work proceeds in milestones (see the master prompt's section 12) on the
+`pocket-heist` branch, merged to `master` at each milestone boundary.
 
 ## Unity project
 
@@ -22,14 +31,32 @@ plan.
   builds work fine here. It has no Linux Dedicated Server module, so the
   real Linux build happens in CI (`.github/workflows/gameserver.yml`, via
   GameCI) instead.
-- **Never hand-edit `.unity`, `.prefab`, or `.meta` files directly.** Make
-  scene/prefab changes through the Unity Editor (or generate them via
-  Unity's own APIs/tooling), and let Unity own `.meta` file generation.
-- The arena, player cubes, all UI (login/character-select/HUD), and physics
-  crates are built entirely from code at runtime (`ArenaBuilder`,
-  `PlayerController.CreateTemplate`, `UiFactory`, `CrateController.CreateTemplate`)
-  — there are no scene-authored GameObjects or prefab assets to edit for
-  any of this; extend the builder code instead.
+- **Imported assets, prefabs, and scenes are allowed and expected** (this
+  reverses Cube Arena's original "everything built from code" rule — see
+  the master prompt's section 3). **Never hand-edit `.unity`, `.prefab`, or
+  `.meta` files directly, though** — that rule survives the pivot
+  unchanged. Create and modify prefabs and scenes through Editor scripts or
+  the Unity Editor itself, and let Unity own `.meta` file generation either
+  way.
+- **Close the Unity Editor before any `-batchmode` run** (build, asset
+  import script, etc.) — a batch-mode invocation and an open Editor can't
+  both hold the project lock.
+- **Asset licensing**: only use assets whose licence permits commercial
+  Steam release (CC0 packs like KayKit/Kenney are fine; never a "free
+  Unity asset" mirror site — see the master prompt's section 4 for the
+  approved sources). Log every imported asset/pack in `docs/ASSETS.md`
+  (name, author, licence, source URL, date, where it's used).
+- **World scale is fixed at ×25** (real-world cm → game meters, environment
+  and the giant scaled up, thieves and loot physics kept at native scale so
+  Unity physics behaves) — see `docs/GAME_DESIGN.md` section 2 for the
+  full conversion table. Every future level scales the same way.
+- Cube Arena's original "everything built from code at runtime" pattern
+  (`ArenaBuilder`, `PlayerController.CreateTemplate`, `UiFactory`,
+  `CrateController.CreateTemplate`) still exists and still works — it isn't
+  being ripped out wholesale, just no longer the *only* allowed approach.
+  Expect it to be replaced piece by piece as milestones bring in real
+  levels/characters (see `docs/GAME_DESIGN.md` section 11's replace/reuse/
+  remove table) rather than all at once.
 - Player state is hand-rolled replication (`NetworkVariable` + predict/
   reconcile) everywhere except `CrateController`, which deliberately uses
   NGO's built-in `NetworkTransform`/`NetworkRigidbody` instead — rigidbody
@@ -56,5 +83,8 @@ plan.
 - No host-client mode. The game server is always a separate, authoritative,
   headless process — including in local dev.
 - No secrets, signing keys, or connection strings in the Unity client, ever.
-- Work in phases per `docs/ROADMAP.md`; stop and summarize at each phase
-  boundary rather than continuing into the next phase unprompted.
+- Max 6 players.
+- Cube Arena's original phases (`docs/ROADMAP.md`) are done; going forward,
+  work in milestones per `POCKET_HEIST_MASTER_PROMPT.md` section 12 on the
+  `pocket-heist` branch, summarizing and merging to `master` at each
+  milestone boundary.
