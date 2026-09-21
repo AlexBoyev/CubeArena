@@ -7,7 +7,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Bound to localhost only — the api container reaches this over the internal
+      # compose network as "postgres:5432" regardless, so nothing about that changes.
+      # This just means Postgres itself is never reachable from the LAN or, worse, the
+      # internet if this host's ports ever get forwarded (see docs/HOSTING.md) — there
+      # was never a reason for it to be reachable from outside this machine at all.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -34,6 +39,17 @@ services:
       LAN_MODE: ${LAN_MODE:-false}
     ports:
       - "${API_PORT:-8080}:8080"
+    # No curl/wget in the base aspnet runtime image, so this checks the port itself
+    # accepts a connection via bash's built-in /dev/tcp rather than pulling in a new
+    # package just for a healthcheck — weaker than hitting /health/ready directly, but
+    # enough to tell "the process is up and listening" from "it crashed on boot" in
+    # `docker compose ps`.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   # Tier 0 (docs/HOSTING.md): the dedicated game server, using the same image
   # gameserver.yml builds and pushes to GHCR in CI. Behind a profile (not

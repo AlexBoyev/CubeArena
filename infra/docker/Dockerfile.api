@@ -15,4 +15,7 @@ WORKDIR /app
 COPY --from=build /app/publish .
 
 EXPOSE 8080
+# The aspnet runtime image ships a built-in non-root "app" user for exactly this —
+# no reason for the API process itself to run as root inside the container.
+USER $APP_UID
 ENTRYPOINT ["dotnet", "CubeArena.Api.dll"]

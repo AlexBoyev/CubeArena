@@ -6,3 +6,6 @@ Temp/
 Logs/
 UserSettings/
 docs/
+Builds/
+Play/
+*.log

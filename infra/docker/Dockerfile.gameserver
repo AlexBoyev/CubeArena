@@ -9,11 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libstdc++6 \
     libgcc-s1 \
     libgl1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /usr/sbin/nologin gameserver
 
 WORKDIR /server
 COPY Builds/LinuxServer/ .
-RUN chmod +x CubeArena.x86_64
+RUN chmod +x CubeArena.x86_64 && chown -R gameserver:gameserver /server
+
+# No reason the game server process needs root inside its container either.
+USER gameserver
 
 EXPOSE 7777/udp
 

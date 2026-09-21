@@ -31,6 +31,7 @@ namespace CubeArena.Client
         private GameObject _mainMenuPanel;
         private GameObject _startGamePanel;
         private GameObject _optionsPanel;
+        private GameObject _aboutPanel;
         private GameObject _loginPanel;
         private GameObject _characterSelectPanel;
         private GameObject _connectingPanel;
@@ -51,6 +52,7 @@ namespace CubeArena.Client
         private Text _scoreboardText;
         private Image _manaBarFill;
         private Text _manaText;
+        private Image _menuBackground;
         private CanvasGroup _fadeGroup;
         private Coroutine _fadeCoroutine;
         private float _matchHudRefreshTimer;
@@ -300,9 +302,11 @@ namespace CubeArena.Client
         private void BuildUi()
         {
             _canvas = UiFactory.CreateCanvas();
+            _menuBackground = UiFactory.CreateBackground(_canvas.transform);
             BuildMainMenuPanel();
             BuildStartGamePanel();
             BuildOptionsPanel();
+            BuildAboutPanel();
             BuildLoginPanel();
             BuildCharacterSelectPanel();
             BuildConnectingPanel();
@@ -342,7 +346,7 @@ namespace CubeArena.Client
             UiFactory.CreateText(panelRect, "Paused", 28, new Vector2(0, 100), new Vector2(260, 40));
             UiFactory.CreateButton(panelRect, "Resume", new Vector2(0, 30), OnResumeClicked, new Vector2(220, 50));
             UiFactory.CreateButton(panelRect, "Options", new Vector2(0, -35), OnPauseOptionsClicked, new Vector2(220, 50));
-            UiFactory.CreateButton(panelRect, "Leave Match", new Vector2(0, -100), OnLeaveClicked, new Vector2(220, 50));
+            UiFactory.CreateButton(panelRect, "Leave Match", new Vector2(0, -100), OnLeaveClicked, new Vector2(220, 50), danger: true);
         }
 
         // Shown on top of the HUD from the moment a player spawns until
@@ -364,14 +368,16 @@ namespace CubeArena.Client
 
         private void BuildMainMenuPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(340, 380));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(340, 420));
             _mainMenuPanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "Cube Arena", 32, new Vector2(0, 150), new Vector2(300, 44));
+            var title = UiFactory.CreateText(panelRect, "Cube Arena", 34, new Vector2(0, 165), new Vector2(300, 44));
+            title.fontStyle = FontStyle.Bold;
 
             var buttonSize = new Vector2(280, 50);
-            UiFactory.CreateButton(panelRect, "Start Game", new Vector2(0, 65), OnStartGameClicked, buttonSize);
-            UiFactory.CreateButton(panelRect, "Options", new Vector2(0, 0), OnOptionsClicked, buttonSize);
-            UiFactory.CreateButton(panelRect, "Exit", new Vector2(0, -65), OnExitClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "New Game", new Vector2(0, 80), OnStartGameClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "Options", new Vector2(0, 15), OnOptionsClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "About", new Vector2(0, -50), OnAboutClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "Exit", new Vector2(0, -115), OnExitClicked, buttonSize, danger: true);
         }
 
         // Sub-menu for the two ways to play (section 6 / Tier-0 LAN hosting): Online
@@ -383,7 +389,7 @@ namespace CubeArena.Client
         {
             var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(340, 260));
             _startGamePanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "Start Game", 28, new Vector2(0, 85), new Vector2(300, 40));
+            UiFactory.CreateText(panelRect, "New Game", 28, new Vector2(0, 85), new Vector2(300, 40));
 
             var buttonSize = new Vector2(280, 50);
             UiFactory.CreateButton(panelRect, "Online", new Vector2(0, 15), OnStartOnlineClicked, buttonSize);
@@ -391,26 +397,33 @@ namespace CubeArena.Client
             UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -110), OnBackClicked, new Vector2(120, 36));
         }
 
-        // Doubles as "About" and "How to Play" — both folded in here rather than kept as
-        // a separate panel/button, and reachable both from the main menu and, via the
-        // pause overlay's own Options button, from mid-game/mid-lobby too (ESC).
+        // Doubles as "How to Play" — reachable both from the main menu and, via the pause
+        // overlay's own Options button, from mid-game/mid-lobby too (ESC).
         private void BuildOptionsPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(400, 340));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(400, 300));
             _optionsPanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "Options", 26, new Vector2(0, 140), new Vector2(340, 40));
-            UiFactory.CreateText(panelRect,
-                "Cube Arena — a 4-player multiplayer prototype.\n" +
-                "Server-authoritative movement, signed connect tickets,\nand a real dedicated game server.",
-                14, new Vector2(0, 90), new Vector2(360, 60));
-            UiFactory.CreateText(panelRect, "How to play", 18, new Vector2(0, 40), new Vector2(340, 30));
+            UiFactory.CreateText(panelRect, "Options", 26, new Vector2(0, 120), new Vector2(340, 40));
+            UiFactory.CreateText(panelRect, "How to play", 18, new Vector2(0, 80), new Vector2(340, 30));
             UiFactory.CreateText(panelRect,
                 "WASD — move\nSpace — jump\nCtrl — crouch (fits under low tunnels)\n" +
                 "C — crawl (for the lowest crawl tunnels)\nShift — sprint (costs mana, recharges over time)\n" +
                 "Esc — pause\n\nCollect the gold pickups for points. Whoever's\n" +
                 "connected longest hosts the lobby and starts the match.",
-                14, new Vector2(0, -70), new Vector2(360, 190));
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -155), OnBackClicked);
+                14, new Vector2(0, -30), new Vector2(360, 190));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -135), OnBackClicked);
+        }
+
+        private void BuildAboutPanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 260));
+            _aboutPanel = panelRect.gameObject;
+            UiFactory.CreateText(panelRect, "About", 26, new Vector2(0, 95), new Vector2(300, 40));
+            UiFactory.CreateText(panelRect,
+                "Cube Arena\nA 4-player multiplayer prototype.\n\n" +
+                "Server-authoritative movement, signed connect\ntickets, and a real dedicated game server.",
+                14, new Vector2(0, 10), new Vector2(340, 110));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -95), OnBackClicked);
         }
 
         private void BuildLoginPanel()
@@ -513,12 +526,16 @@ namespace CubeArena.Client
             _mainMenuPanel.SetActive(panel == _mainMenuPanel);
             _startGamePanel.SetActive(panel == _startGamePanel);
             _optionsPanel.SetActive(panel == _optionsPanel);
+            _aboutPanel.SetActive(panel == _aboutPanel);
             _loginPanel.SetActive(panel == _loginPanel);
             _characterSelectPanel.SetActive(panel == _characterSelectPanel);
             _connectingPanel.SetActive(panel == _connectingPanel);
             _hudPanel.SetActive(panel == _hudPanel);
             _minimap.SetActive(panel == _hudPanel);
             _matchHudPanel.SetActive(panel == _hudPanel);
+            // The gradient backdrop is the menu flow's "world" — visible everywhere
+            // except the HUD, where the real 3D arena behind the canvas takes over.
+            _menuBackground.gameObject.SetActive(panel != _hudPanel);
             _currentPanel = panel;
 
             if (isRealTransition)
@@ -642,6 +659,8 @@ namespace CubeArena.Client
         }
 
         private void OnOptionsClicked() => NavigateTo(_optionsPanel);
+
+        private void OnAboutClicked() => NavigateTo(_aboutPanel);
 
         // From the pause overlay specifically: hide it first (rather than calling
         // TogglePause, which would resume gameplay/relock the cursor) so it doesn't

@@ -115,24 +115,44 @@ boot. Full component diagram, sequence diagram, and threat model:
 
 ## Gameplay
 
-Deliberately minimal, per the brief:
+Built up iteratively past the original minimal brief — still no combat, no
+chat, no persistence of match results across sessions, but there's a real
+objective now:
 
-- **Arena**: a 40x40 flat plane with a boundary wall and static obstacle
-  cubes.
-- **Character**: a 1x1x1 body cube with a small "head" cube on top. No
-  models, no animation.
+- **Arena**: a 40x40 flat plane with a boundary wall, an obstacle course
+  (a crouch tunnel, a climbable tower, a jump gap, a balance beam, two
+  houses with interior stairs to a loft, and two crawl tunnels), and gold
+  pickups that respawn on collection.
+- **Character**: a blocky humanoid (torso/head/arms/legs, all primitive
+  cubes) with a walk-cycle limb swing and a nameplate showing the player's
+  chosen display name.
 - **Colours**: four fixed slots — red, blue, green, yellow — assigned by
-  the server from the connect ticket's `slot` claim. The client only
-  renders the assignment it's given.
-- **Movement**: WASD, 5 m/s, server-authoritative at a 30Hz tick.
+  the server from the connect ticket's `slot` claim.
+- **Movement**: WASD at 5 m/s, server-authoritative at a 30Hz tick with
+  client-side prediction/reconciliation. Space to jump, Ctrl to crouch
+  (fits under low obstacles), C to crawl (for the lowest tunnels — crouch
+  alone doesn't clear them), Shift to sprint (1.6x speed, gated by a mana
+  resource that drains while sprinting and locks out once empty until it
+  recovers to 30%).
+  Esc pauses locally (freezes only your own input/camera — the match keeps
+  running for everyone else) and opens Options/Leave from a single menu.
+- **Lobby**: players spawn in and can look around immediately, but movement
+  and pickups are frozen until whoever's been connected longest ("the
+  host") clicks Start Match — a shown-to-everyone lobby panel tracks how
+  many are connected.
+- **Scoring**: collect gold pickups for points, shown on a live scoreboard;
+  a 5-minute match clock (only running once the lobby's Start Match has
+  been clicked) ends the round, announces a winner, and returns everyone to
+  a fresh lobby.
 - **Minimap**: a top-down orthographic camera rendering the real arena to
   a `RenderTexture`, shown in a HUD corner — player cubes naturally appear
   as coloured dots from directly above.
 - **Disconnect / rejoin**: a graceful leave, a timeout, or a clean
   process exit all release your slot after a short grace period; a
-  rejoin within that window returns you to the same session and slot.
-
-No combat, no scoring, no chat, no persistence of match results.
+  rejoin within that window returns you to the same session and slot. The
+  game server also declares a connection dead after 5s of inactivity
+  (`DisconnectTimeoutMS`), not UTP's 30s default, so a crashed/force-killed
+  client's player object doesn't linger on-screen for everyone else.
 
 ## Repo layout
 
@@ -193,6 +213,20 @@ today's connect string baked in); run `.\install-git-hooks.ps1` once so
 `git push`; or grab the one CI rebuilds on every push to `master`: the
 [`latest-client` release](../../releases/tag/latest-client).
 
+When you're done hosting: double-click `infra/compose/Stop-CubeArena-Host.bat`
+(or `.\stop-host.ps1`) — stops the dedicated server and brings the backend
+down with it. Closing just the server window on its own only disconnects
+players; Postgres/the API keep running (and stay reachable on whatever's
+forwarded) until this is run.
+
+Playing with someone who isn't on your physical LAN, without a cloud VM: see
+`docs/HOSTING.md`'s "Playing with people who aren't on your physical LAN"
+section — either a [Tailscale](https://tailscale.com) mesh network (nothing
+forwarded to the open internet, one small app for each remote player), or
+plain router port forwarding (zero installs for players, but the backend
+port becomes reachable by the open internet while it's up — `docs/HOSTING.md`
+covers exactly what that does and doesn't expose).
+
 Tier 2 (a real internet-reachable deploy on a cloud VM, once the game is
 worth deploying that far) and Tier 3 (managed/scaling sketch) are also
 documented in `docs/HOSTING.md`, with a full copy-pasteable VM runbook for
@@ -206,10 +240,14 @@ Tier 2.
 3. On the login screen, paste the host's server address into the **"server
    address"** field (defaults to `http://localhost:8080` if left blank).
 4. **Register** an account (any email/password), then **Log in**.
-5. Pick a display name (cosmetic only) and click **Quick Play**.
-6. WASD to move. The minimap in the corner shows every connected player as
-   a coloured dot. **Leave** returns you to character select and frees your
-   slot after a short grace period.
+5. Pick a display name and click **Quick Play** — you'll land in a lobby
+   showing how many players are connected.
+6. Whoever's been connected longest is the host and sees a **Start Match**
+   button; everyone else waits until they click it. WASD to move, Space to
+   jump, Ctrl to crouch, C to crawl, Shift to sprint, Esc to pause. Collect
+   gold pickups for points before the 5-minute clock runs out. **Leave**
+   (in the Esc menu) returns you to character select and frees your slot
+   after a short grace period.
 
 ## Testing
 
