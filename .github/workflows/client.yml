@@ -67,7 +67,7 @@ jobs:
       # Publishes to a single, stable "latest-client" release so there's
       # always one predictable download link - overwritten on every push
       # to master, not a new release per push.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-client
           name: Cube Arena - latest client build
