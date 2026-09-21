@@ -78,6 +78,15 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<float> _mana = new(
             MovementConstants.SprintManaMax, writePerm: NetworkVariableWritePermission.Server);
 
+        // Hysteresis latch on top of _mana: true from the moment mana hits 0 until it
+        // recovers to MovementConstants.SprintResumeFraction, gating sprint the whole
+        // time it's true regardless of _mana ticking back above 0 in between. Without
+        // this, drain (tick N) and regen (tick N+1) fighting right at the 0 boundary let
+        // mana bounce between ~0 and a fraction of a regen-tick forever, which read as
+        // "infinite sprint at 0-1%" — a real exploit, not just a display glitch.
+        private readonly NetworkVariable<bool> _sprintExhausted = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
         private readonly NetworkVariable<int> _score = new(
             writePerm: NetworkVariableWritePermission.Server);
 
@@ -386,9 +395,22 @@ namespace CubeArena.Shared
             // for fairness, and the position-reconcile below already absorbs the odd
             // mispredicted tick. Doesn't require actually moving — holding Shift while
             // standing still spends mana too, same as SimulateMovement below, so there's
-            // no "why didn't it drain" case where the bar just looks stuck.
-            var sprinting = _sprintHeld.Value && _predictedEffectivePose == PlayerPose.Standing && _mana.Value > 0f;
+            // no "why didn't it drain" case where the bar just looks stuck. Gated on
+            // _sprintExhausted (server-authoritative hysteresis), not a raw _mana > 0
+            // check — see its declaration.
+            var sprinting = _sprintHeld.Value && _predictedEffectivePose == PlayerPose.Standing && !_sprintExhausted.Value;
             var speedMultiplier = SpeedMultiplierFor(_predictedEffectivePose) * (sprinting ? MovementConstants.SprintSpeedMultiplier : 1f);
+
+            // Frozen while the lobby's still up (MatchManager.Instance.MatchStarted is
+            // false) — mirrors the same gate in SimulateMovement so the owner's own
+            // prediction doesn't drift ahead of the server and then snap back. Gravity
+            // still applies so the player stays grounded instead of floating.
+            var matchActive = IsMatchActive();
+            var predictedInput = matchActive ? _lastSentInput : Vector2.zero;
+            if (!matchActive)
+            {
+                _predictedJumpRequested = false;
+            }
 
             var grounded = _characterController.isGrounded;
             if (_predictedJumpRequested && grounded)
@@ -408,7 +430,7 @@ namespace CubeArena.Shared
                 _predictedVerticalVelocity += MovementConstants.Gravity * Time.deltaTime;
             }
 
-            var move = new Vector3(_lastSentInput.x, 0, _lastSentInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * Time.deltaTime)
+            var move = new Vector3(predictedInput.x, 0, predictedInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * Time.deltaTime)
                        + Vector3.up * (_predictedVerticalVelocity * Time.deltaTime);
             _characterController.Move(move);
 
@@ -475,13 +497,26 @@ namespace CubeArena.Shared
             var effectivePose = ApplyPoseToController(_pose.Value);
             _effectivePose.Value = effectivePose;
 
+            // Hysteresis latch: once mana is fully drained, sprint stays locked out until
+            // it's recovered back up to SprintResumeFraction, not just "> 0" — see
+            // _sprintExhausted's declaration for why a plain > 0 check let sprint drain
+            // and regen fight each other forever right at the 0 boundary.
+            if (_mana.Value <= 0f)
+            {
+                _sprintExhausted.Value = true;
+            }
+            else if (_mana.Value >= MovementConstants.SprintManaMax * MovementConstants.SprintResumeFraction)
+            {
+                _sprintExhausted.Value = false;
+            }
+
             // Sprint only while actually standing — holding Shift while crouched/crawling
             // drains nothing (deliberately doesn't require movement too: holding Shift
             // always spends mana, so there's no silent no-op case that reads as "sprint
             // just doesn't work").
-            var wantsSprint = _sprintHeld.Value && effectivePose == PlayerPose.Standing;
+            var wantsSprint = _sprintHeld.Value && effectivePose == PlayerPose.Standing && !_sprintExhausted.Value;
             bool sprinting;
-            if (wantsSprint && _mana.Value > 0f)
+            if (wantsSprint)
             {
                 _mana.Value = Mathf.Max(0f, _mana.Value - MovementConstants.SprintManaDrainPerSecond * deltaTime);
                 sprinting = true;
@@ -493,6 +528,17 @@ namespace CubeArena.Shared
             }
 
             var speedMultiplier = SpeedMultiplierFor(effectivePose) * (sprinting ? MovementConstants.SprintSpeedMultiplier : 1f);
+
+            // Frozen while the lobby's still up — "during lobby i can move and collect"
+            // was a real complaint: a lobby that lets you play isn't really a lobby.
+            // Gravity/grounding still runs below so the player stays put on the ground
+            // rather than floating, they just can't walk or jump until the host starts.
+            var matchActive = IsMatchActive();
+            var horizontalInput = matchActive ? _currentInput : Vector2.zero;
+            if (!matchActive)
+            {
+                _jumpRequested = false; // no queued jump carries over into the match starting
+            }
 
             var grounded = _characterController.isGrounded;
 
@@ -519,11 +565,16 @@ namespace CubeArena.Shared
                 _verticalVelocity += MovementConstants.Gravity * deltaTime;
             }
 
-            var move = new Vector3(_currentInput.x, 0, _currentInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * deltaTime)
+            var move = new Vector3(horizontalInput.x, 0, horizontalInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * deltaTime)
                        + Vector3.up * (_verticalVelocity * deltaTime);
             _characterController.Move(move);
             _serverPosition.Value = transform.position;
         }
+
+        // "Match active" = either there's no MatchManager yet (fail open — never lock a
+        // player out of moving just because of spawn ordering) or it exists and has
+        // actually been started (see the lobby's Start Match button).
+        private static bool IsMatchActive() => MatchManager.Instance == null || MatchManager.Instance.MatchStarted;
 
         // Resizes the CharacterController itself for the current pose (so it can, e.g.,
         // fit under something a standing player couldn't) — called from both

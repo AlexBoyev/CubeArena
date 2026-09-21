@@ -37,7 +37,10 @@ namespace CubeArena.Shared
 
         private void Update()
         {
-            if (!IsServer)
+            // Not collectible until the host actually starts the match — walking around
+            // grabbing free points during the lobby ("during lobby i can move and
+            // collect") isn't just cosmetically odd, it's a real head-start exploit.
+            if (!IsServer || (MatchManager.Instance != null && !MatchManager.Instance.MatchStarted))
             {
                 return;
             }

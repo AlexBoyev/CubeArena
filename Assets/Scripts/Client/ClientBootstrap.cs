@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
@@ -30,7 +31,6 @@ namespace CubeArena.Client
         private GameObject _mainMenuPanel;
         private GameObject _startGamePanel;
         private GameObject _optionsPanel;
-        private GameObject _aboutPanel;
         private GameObject _loginPanel;
         private GameObject _characterSelectPanel;
         private GameObject _connectingPanel;
@@ -51,6 +51,8 @@ namespace CubeArena.Client
         private Text _scoreboardText;
         private Image _manaBarFill;
         private Text _manaText;
+        private CanvasGroup _fadeGroup;
+        private Coroutine _fadeCoroutine;
         private float _matchHudRefreshTimer;
         private InputField _serverField;
         private InputField _emailField;
@@ -120,6 +122,14 @@ namespace CubeArena.Client
                     var fraction = _localPlayer.Mana / MovementConstants.SprintManaMax;
                     _manaBarFill.fillAmount = fraction;
                     _manaText.text = $"{Mathf.RoundToInt(fraction * 100f)}%";
+                    // Red band matches MovementConstants.SprintResumeFraction (30%) — the
+                    // same point sprint actually re-enables after hitting empty, so the
+                    // color is a real signal, not an arbitrary gradient.
+                    _manaBarFill.color = fraction >= 0.6f
+                        ? new Color(0.3f, 0.85f, 0.3f)
+                        : fraction >= MovementConstants.SprintResumeFraction
+                            ? new Color(0.9f, 0.75f, 0.15f)
+                            : new Color(0.85f, 0.25f, 0.25f);
                 }
             }
 
@@ -143,24 +153,45 @@ namespace CubeArena.Client
             _isPaused = !_isPaused;
             _pausePanel.SetActive(_isPaused);
             _localPlayer?.SetInputPaused(_isPaused);
+            RefreshCursorState();
+        }
+
+        private void OnResumeClicked() => TogglePause();
+
+        // Single source of truth for whether the cursor/camera should be locked for
+        // gameplay right now — true only once the match has actually started AND the
+        // player isn't paused. Called every frame the HUD is active (see UpdateLobby)
+        // so it's always current, not just recomputed at specific transition points —
+        // that's what "during lobby i can move and collect, no mouse control to click
+        // start" turned out to be: the cursor was hard-locked from the moment the
+        // player spawned, with nothing accounting for the lobby needing it free to
+        // click Start Match at all.
+        private void RefreshCursorState()
+        {
+            var matchActive = MatchManager.Instance == null || MatchManager.Instance.MatchStarted;
+            var shouldLock = matchActive && !_isPaused;
+            var wasLocked = Cursor.lockState == CursorLockMode.Locked;
 
             if (_cameraFollow != null)
             {
-                _cameraFollow.Paused = _isPaused;
-                if (!_isPaused)
+                // Whenever the cursor is free for UI interaction — paused, or still in
+                // the lobby — the camera needs to stop reading mouse-look too, or moving
+                // the mouse to click a button (Resume, Start Match, whatever) silently
+                // spins the camera in the background the same way the pause-only version
+                // of this bug did.
+                _cameraFollow.Paused = !shouldLock;
+                if (shouldLock && !wasLocked)
                 {
-                    // Re-locking below snaps the OS cursor back to center, which can
-                    // register as a single huge mouse delta on the next read — discard it
-                    // so resuming doesn't also snap the view to a random angle.
+                    // Locking snaps the OS cursor back to center, which can register as a
+                    // single huge synthetic delta on the next read — discard it so
+                    // locking back in doesn't also snap the view to a random angle.
                     _cameraFollow.NotifyResumed();
                 }
             }
 
-            Cursor.lockState = _isPaused ? CursorLockMode.None : CursorLockMode.Locked;
-            Cursor.visible = _isPaused;
+            Cursor.lockState = shouldLock ? CursorLockMode.Locked : CursorLockMode.None;
+            Cursor.visible = !shouldLock;
         }
-
-        private void OnResumeClicked() => TogglePause();
 
         // Throttled to 4x/second — plenty for a countdown and scoreboard, and cheaper
         // than a FindObjectsByType scan every single frame. Everything read here
@@ -210,6 +241,8 @@ namespace CubeArena.Client
         // 250ms late.
         private void UpdateLobby()
         {
+            RefreshCursorState();
+
             var matchManager = MatchManager.Instance;
             var networkManager = NetworkManager.Singleton;
             if (matchManager == null || networkManager == null)
@@ -270,34 +303,55 @@ namespace CubeArena.Client
             BuildMainMenuPanel();
             BuildStartGamePanel();
             BuildOptionsPanel();
-            BuildAboutPanel();
             BuildLoginPanel();
             BuildCharacterSelectPanel();
             BuildConnectingPanel();
             BuildHud();
             BuildPausePanel();
             BuildLobbyPanel();
+            BuildFadeOverlay(); // built last so it's the topmost sibling, drawing over every panel above
             ShowOnly(_mainMenuPanel);
+        }
+
+        // A brief black flash on every screen change (ShowOnly) — most noticeable
+        // leaving an actual match back to character select, but applies uniformly to
+        // every panel switch rather than special-casing which ones "deserve" it.
+        private void BuildFadeOverlay()
+        {
+            var go = new GameObject("FadeOverlay", typeof(Image), typeof(CanvasGroup));
+            go.transform.SetParent(_canvas.transform, false);
+            var rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = rect.offsetMax = Vector2.zero;
+            go.GetComponent<Image>().color = Color.black;
+
+            _fadeGroup = go.GetComponent<CanvasGroup>();
+            _fadeGroup.alpha = 0f;
+            _fadeGroup.blocksRaycasts = false;
+            _fadeGroup.interactable = false;
         }
 
         // A local-only overlay (see Update's TogglePause) — not part of the exclusive
         // ShowOnly panel set, since it sits on top of the HUD rather than replacing it.
         private void BuildPausePanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(300, 220));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(300, 280));
             _pausePanel = panelRect.gameObject;
             _pausePanel.SetActive(false);
-            UiFactory.CreateText(panelRect, "Paused", 28, new Vector2(0, 70), new Vector2(260, 40));
-            UiFactory.CreateButton(panelRect, "Resume", new Vector2(0, 0), OnResumeClicked, new Vector2(220, 50));
-            UiFactory.CreateButton(panelRect, "Leave Match", new Vector2(0, -65), OnLeaveClicked, new Vector2(220, 50));
+            UiFactory.CreateText(panelRect, "Paused", 28, new Vector2(0, 100), new Vector2(260, 40));
+            UiFactory.CreateButton(panelRect, "Resume", new Vector2(0, 30), OnResumeClicked, new Vector2(220, 50));
+            UiFactory.CreateButton(panelRect, "Options", new Vector2(0, -35), OnPauseOptionsClicked, new Vector2(220, 50));
+            UiFactory.CreateButton(panelRect, "Leave Match", new Vector2(0, -100), OnLeaveClicked, new Vector2(220, 50));
         }
 
         // Shown on top of the HUD from the moment a player spawns until
-        // MatchManager.Instance.MatchStarted goes true (see Update's UpdateLobby) —
-        // players can already walk around and look at the arena while it's up, they just
-        // can't score yet and the 5-minute clock hasn't started. Everyone sees the same
-        // panel; only whoever's currently "host" (lowest connected client id) sees an
-        // enabled Start button instead of a "waiting" message.
+        // MatchManager.Instance.MatchStarted goes true (see Update's UpdateLobby).
+        // Movement is frozen while this is up (PlayerController.IsMatchActive) — a lobby
+        // that still lets you walk around and collect pickups isn't really a lobby.
+        // Everyone sees the same panel; only whoever's currently "host" (lowest
+        // connected client id) sees an enabled Start button instead of a "waiting"
+        // message.
         private void BuildLobbyPanel()
         {
             var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(320, 200));
@@ -317,8 +371,7 @@ namespace CubeArena.Client
             var buttonSize = new Vector2(280, 50);
             UiFactory.CreateButton(panelRect, "Start Game", new Vector2(0, 65), OnStartGameClicked, buttonSize);
             UiFactory.CreateButton(panelRect, "Options", new Vector2(0, 0), OnOptionsClicked, buttonSize);
-            UiFactory.CreateButton(panelRect, "About", new Vector2(0, -65), OnAboutClicked, buttonSize);
-            UiFactory.CreateButton(panelRect, "Exit", new Vector2(0, -130), OnExitClicked, buttonSize);
+            UiFactory.CreateButton(panelRect, "Exit", new Vector2(0, -65), OnExitClicked, buttonSize);
         }
 
         // Sub-menu for the two ways to play (section 6 / Tier-0 LAN hosting): Online
@@ -338,25 +391,26 @@ namespace CubeArena.Client
             UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -110), OnBackClicked, new Vector2(120, 36));
         }
 
+        // Doubles as "About" and "How to Play" — both folded in here rather than kept as
+        // a separate panel/button, and reachable both from the main menu and, via the
+        // pause overlay's own Options button, from mid-game/mid-lobby too (ESC).
         private void BuildOptionsPanel()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(340, 220));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(400, 340));
             _optionsPanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "Options", 24, new Vector2(0, 70), new Vector2(300, 40));
-            UiFactory.CreateText(panelRect, "Work in progress", 18, new Vector2(0, 0), new Vector2(300, 40));
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -75), OnBackClicked);
-        }
-
-        private void BuildAboutPanel()
-        {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 260));
-            _aboutPanel = panelRect.gameObject;
-            UiFactory.CreateText(panelRect, "About", 24, new Vector2(0, 95), new Vector2(300, 40));
+            UiFactory.CreateText(panelRect, "Options", 26, new Vector2(0, 140), new Vector2(340, 40));
             UiFactory.CreateText(panelRect,
-                "Cube Arena\nA 4-player multiplayer prototype.\n\n" +
-                "Server-authoritative movement, signed connect\ntickets, and a real dedicated game server.",
-                14, new Vector2(0, 10), new Vector2(340, 110));
-            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -95), OnBackClicked);
+                "Cube Arena — a 4-player multiplayer prototype.\n" +
+                "Server-authoritative movement, signed connect tickets,\nand a real dedicated game server.",
+                14, new Vector2(0, 90), new Vector2(360, 60));
+            UiFactory.CreateText(panelRect, "How to play", 18, new Vector2(0, 40), new Vector2(340, 30));
+            UiFactory.CreateText(panelRect,
+                "WASD — move\nSpace — jump\nCtrl — crouch (fits under low tunnels)\n" +
+                "C — crawl (for the lowest crawl tunnels)\nShift — sprint (costs mana, recharges over time)\n" +
+                "Esc — pause\n\nCollect the gold pickups for points. Whoever's\n" +
+                "connected longest hosts the lobby and starts the match.",
+                14, new Vector2(0, -70), new Vector2(360, 190));
+            UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -155), OnBackClicked);
         }
 
         private void BuildLoginPanel()
@@ -452,10 +506,13 @@ namespace CubeArena.Client
 
         private void ShowOnly(GameObject panel)
         {
+            // Skip on the very first call (startup, nothing to transition from) and on a
+            // same-panel no-op — only an actual screen change gets the flash.
+            var isRealTransition = _currentPanel != null && _currentPanel != panel;
+
             _mainMenuPanel.SetActive(panel == _mainMenuPanel);
             _startGamePanel.SetActive(panel == _startGamePanel);
             _optionsPanel.SetActive(panel == _optionsPanel);
-            _aboutPanel.SetActive(panel == _aboutPanel);
             _loginPanel.SetActive(panel == _loginPanel);
             _characterSelectPanel.SetActive(panel == _characterSelectPanel);
             _connectingPanel.SetActive(panel == _connectingPanel);
@@ -463,6 +520,43 @@ namespace CubeArena.Client
             _minimap.SetActive(panel == _hudPanel);
             _matchHudPanel.SetActive(panel == _hudPanel);
             _currentPanel = panel;
+
+            if (isRealTransition)
+            {
+                PlayScreenTransition();
+            }
+        }
+
+        private const float ScreenFadeDuration = 0.18f;
+
+        private void PlayScreenTransition()
+        {
+            if (_fadeGroup == null)
+            {
+                return;
+            }
+
+            if (_fadeCoroutine != null)
+            {
+                StopCoroutine(_fadeCoroutine);
+            }
+
+            _fadeCoroutine = StartCoroutine(FadeOverlayRoutine());
+        }
+
+        private IEnumerator FadeOverlayRoutine()
+        {
+            _fadeGroup.alpha = 1f;
+            var t = 0f;
+            while (t < ScreenFadeDuration)
+            {
+                t += Time.deltaTime;
+                _fadeGroup.alpha = 1f - Mathf.Clamp01(t / ScreenFadeDuration);
+                yield return null;
+            }
+
+            _fadeGroup.alpha = 0f;
+            _fadeCoroutine = null;
         }
 
         // Pushes the panel showing now onto history before switching — use this for
@@ -481,9 +575,21 @@ namespace CubeArena.Client
 
         private void GoBack()
         {
-            if (_panelHistory.Count > 0)
+            if (_panelHistory.Count == 0)
             {
-                ShowOnly(_panelHistory.Pop());
+                return;
+            }
+
+            var previous = _panelHistory.Pop();
+            ShowOnly(previous);
+
+            // Landing back on the HUD while still logically paused (reached Options via
+            // the pause overlay's Options button, which hides it first so it doesn't
+            // visually overlap) — restore the pause overlay rather than leaving the
+            // player stuck with no way back to Resume/Leave short of pressing Esc again.
+            if (previous == _hudPanel && _isPaused)
+            {
+                _pausePanel.SetActive(true);
             }
         }
 
@@ -537,7 +643,15 @@ namespace CubeArena.Client
 
         private void OnOptionsClicked() => NavigateTo(_optionsPanel);
 
-        private void OnAboutClicked() => NavigateTo(_aboutPanel);
+        // From the pause overlay specifically: hide it first (rather than calling
+        // TogglePause, which would resume gameplay/relock the cursor) so it doesn't
+        // visually overlap the full-screen Options panel underneath — GoBack restores it
+        // once the player backs out, since _isPaused stays true the whole time.
+        private void OnPauseOptionsClicked()
+        {
+            _pausePanel.SetActive(false);
+            NavigateTo(_optionsPanel);
+        }
 
         private void OnBackClicked() => GoBack();
 
@@ -664,10 +778,11 @@ namespace CubeArena.Client
             _localPlayer = player;
             ShowOnly(_hudPanel);
 
-            // Locked while playing so mouse movement drives CameraFollow's look instead
-            // of the OS cursor; released again on disconnect below.
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
+            // Starts unlocked — RefreshCursorState (driven every frame by UpdateLobby)
+            // takes over from here, and a freshly spawned player always lands in the
+            // lobby first (match not started yet), which needs the cursor free to click
+            // Start Match.
+            RefreshCursorState();
         }
 
         private void OnDisconnected(ulong clientId)
