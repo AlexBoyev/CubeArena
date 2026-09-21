@@ -19,6 +19,17 @@ namespace CubeArena.Server
         private CancellationTokenSource _heartbeatCts;
         private readonly Dictionary<ulong, Guid> _connectedUsers = new();
         private readonly Dictionary<ulong, (Guid UserId, int SlotIndex)> _approvedPendingConnect = new();
+
+        // A disconnect (deliberate Leave Match, a crash, a timeout — anything) destroys
+        // that player's PlayerController entirely, along with its score. Without this,
+        // rejoining a still-running match (the existing confirm/release/rejoin grace
+        // period already lets you reconnect into the same session) respawned a fresh
+        // PlayerController at 0, which read as "leaving and rejoining resets your score"
+        // even though the match itself hadn't reset. Mirrored live via each player's
+        // ScoreChanged event, keyed by userId (survives past any one connection), and
+        // cleared in OnMatchEnded so a rejoin after a new round starts doesn't wrongly
+        // restore a score from the round before.
+        private readonly Dictionary<Guid, int> _savedScores = new();
         private FleetClient _fleet;
         private NetworkManager _networkManager;
         private GameObject _pickupTemplate;
@@ -109,7 +120,13 @@ namespace CubeArena.Server
                 }
 
                 _connectedUsers[clientId] = info.UserId;
-                SpawnPlayer(playerTemplate, clientId, info.SlotIndex);
+                var player = SpawnPlayer(playerTemplate, clientId, info.SlotIndex);
+                player.ScoreChanged += newScore => _savedScores[info.UserId] = newScore;
+                if (_savedScores.TryGetValue(info.UserId, out var savedScore))
+                {
+                    player.SetScore(savedScore);
+                }
+
                 _ = ConfirmSlotSafeAsync(info.UserId);
             };
 
@@ -183,6 +200,10 @@ namespace CubeArena.Server
                 player.ResetScore();
             }
 
+            // A rejoin into the round that's about to start fresh should never inherit a
+            // score from the round that just ended.
+            _savedScores.Clear();
+
             _matchManager.ResetForNewRound();
         }
 
@@ -217,7 +238,8 @@ namespace CubeArena.Server
                 return $"Match ended (5 minute time limit) — tied at {highScore} point(s)!" + suffix;
             }
 
-            return $"Match ended (5 minute time limit) — Slot {winner.SlotIndex} wins with {highScore} point(s)!" + suffix;
+            var winnerName = string.IsNullOrEmpty(winner.DisplayName) ? PlayerColors.GetName(winner.SlotIndex) : winner.DisplayName;
+            return $"Match ended (5 minute time limit) — {winnerName} wins with {highScore} point(s)!" + suffix;
         }
 
         private async Task ConfirmSlotSafeAsync(Guid userId)
@@ -244,7 +266,7 @@ namespace CubeArena.Server
             }
         }
 
-        private static void SpawnPlayer(GameObject playerTemplate, ulong clientId, int slotIndex)
+        private static PlayerController SpawnPlayer(GameObject playerTemplate, ulong clientId, int slotIndex)
         {
             var spawnPosition = SpawnPoints.Get(slotIndex);
 
@@ -256,8 +278,10 @@ namespace CubeArena.Server
             // to make a runtime-only prefab spawn correctly at all — GlobalObjectIdHash and
             // staying active, not spawn ordering.
             var instance = UnityEngine.Object.Instantiate(playerTemplate, spawnPosition, Quaternion.identity);
-            instance.GetComponent<PlayerController>().ServerInitialize(slotIndex, spawnPosition);
+            var player = instance.GetComponent<PlayerController>();
+            player.ServerInitialize(slotIndex, spawnPosition);
             instance.GetComponent<NetworkObject>().SpawnAsPlayerObject(clientId);
+            return player;
         }
     }
 }

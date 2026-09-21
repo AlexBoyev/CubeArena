@@ -132,6 +132,16 @@ namespace CubeArena.Shared
         public int SlotIndex => _slotIndex.Value;
         public int Score => _score.Value;
         public float Mana => _mana.Value;
+        public string DisplayName => _displayName.Value.ToString();
+
+        // Server-only: ServerBootstrap listens for this to mirror each player's score
+        // into a userId-keyed dictionary that survives past this NetworkObject's own
+        // lifetime — needed because a disconnect (including a deliberate Leave Match)
+        // destroys this GameObject entirely, and without something outside it
+        // remembering the score, rejoining a still-running match respawned a fresh
+        // PlayerController at 0 even though the match itself hadn't reset. See
+        // ServerBootstrap's _savedScores.
+        public event Action<int> ScoreChanged;
 
         private void Awake()
         {
@@ -164,6 +174,7 @@ namespace CubeArena.Shared
             if (IsServer)
             {
                 ActiveServerPlayers.Add(this);
+                _score.OnValueChanged += (_, newValue) => ScoreChanged?.Invoke(newValue);
             }
 
             if (!IsServer)
@@ -195,6 +206,15 @@ namespace CubeArena.Shared
         public void ResetScore()
         {
             _score.Value = 0;
+        }
+
+        // Server-only: called by ServerBootstrap right after spawning a rejoining
+        // player, to restore whatever score they had before they disconnected (see
+        // ScoreChanged/_savedScores) instead of leaving them at the fresh-spawn default
+        // of 0 mid-match.
+        public void SetScore(int score)
+        {
+            _score.Value = score;
         }
 
         // Owner-client-side: called by ClientBootstrap once, right after this player's

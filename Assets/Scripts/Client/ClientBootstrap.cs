@@ -39,6 +39,7 @@ namespace CubeArena.Client
         private GameObject _matchHudPanel;
         private GameObject _pausePanel;
         private GameObject _lobbyPanel;
+        private GameObject _tabScoreboardPanel;
         private GameObject _minimap;
         private PlayerController _localPlayer;
         private CameraFollow _cameraFollow;
@@ -49,7 +50,8 @@ namespace CubeArena.Client
         private Text _selectStatus;
         private Text _hudText;
         private Text _timerText;
-        private Text _scoreboardText;
+        private Text _tabNamesText;
+        private Text _tabScoresText;
         private Image _manaBarFill;
         private Text _manaText;
         private Image _menuBackground;
@@ -133,6 +135,18 @@ namespace CubeArena.Client
                             ? new Color(0.9f, 0.75f, 0.15f)
                             : new Color(0.85f, 0.25f, 0.25f);
                 }
+
+                // Hold Tab for the full scoreboard — suppressed while paused so it doesn't
+                // stack visually with the pause overlay.
+                var showScoreboard = !_isPaused && Keyboard.current != null && Keyboard.current.tabKey.isPressed;
+                if (_tabScoreboardPanel.activeSelf != showScoreboard)
+                {
+                    _tabScoreboardPanel.SetActive(showScoreboard);
+                }
+            }
+            else if (_tabScoreboardPanel.activeSelf)
+            {
+                _tabScoreboardPanel.SetActive(false);
             }
 
             if (Keyboard.current == null || !Keyboard.current.escapeKey.wasPressedThisFrame)
@@ -197,9 +211,9 @@ namespace CubeArena.Client
 
         // Throttled to 4x/second — plenty for a countdown and scoreboard, and cheaper
         // than a FindObjectsByType scan every single frame. Everything read here
-        // (MatchManager.Instance.TimeRemaining, each PlayerController's Score/SlotIndex)
-        // is already replicated to every client via NetworkVariables, so no extra
-        // networking is needed just to show it.
+        // (MatchManager.Instance.TimeRemaining, each PlayerController's Score/
+        // SlotIndex/DisplayName) is already replicated to every client via
+        // NetworkVariables, so no extra networking is needed just to show it.
         private void UpdateMatchHud()
         {
             _matchHudRefreshTimer -= Time.deltaTime;
@@ -222,7 +236,8 @@ namespace CubeArena.Client
             // spawned (i.e. real, connected) players.
             var players = FindObjectsByType<PlayerController>(FindObjectsSortMode.None);
             Array.Sort(players, (a, b) => b.Score.CompareTo(a.Score));
-            var scoreboard = new StringBuilder();
+            var names = new StringBuilder();
+            var scores = new StringBuilder();
             foreach (var player in players)
             {
                 if (!player.IsSpawned)
@@ -230,10 +245,16 @@ namespace CubeArena.Client
                     continue;
                 }
 
-                scoreboard.AppendLine($"Slot {player.SlotIndex}: {player.Score}");
+                // Falls back to the slot's color name rather than "Slot N" — matches the
+                // same default ClientBootstrap now submits when a player left the name
+                // field blank at character select.
+                var name = string.IsNullOrEmpty(player.DisplayName) ? PlayerColors.GetName(player.SlotIndex) : player.DisplayName;
+                names.AppendLine(name);
+                scores.AppendLine(player.Score.ToString());
             }
 
-            _scoreboardText.text = scoreboard.ToString();
+            _tabNamesText.text = names.ToString();
+            _tabScoresText.text = scores.ToString();
         }
 
         // Shows/hides the lobby overlay based on MatchManager.Instance.MatchStarted, and
@@ -313,6 +334,7 @@ namespace CubeArena.Client
             BuildHud();
             BuildPausePanel();
             BuildLobbyPanel();
+            BuildTabScoreboardPanel();
             BuildFadeOverlay(); // built last so it's the topmost sibling, drawing over every panel above
             ShowOnly(_mainMenuPanel);
         }
@@ -485,36 +507,51 @@ namespace CubeArena.Client
 
         private void BuildHud()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 220));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 170));
             panelRect.anchorMin = panelRect.anchorMax = new Vector2(0f, 1f);
             panelRect.pivot = new Vector2(0f, 1f);
             panelRect.anchoredPosition = new Vector2(16, -16);
             _hudPanel = panelRect.gameObject;
-            _hudText = UiFactory.CreateText(panelRect, "", 18, new Vector2(0, 55), new Vector2(240, 50));
-            UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -10), OnLeaveClicked);
-            // Answers "what button is crawl/sprint" in-game rather than only in a
-            // changelog — both are easy to miss since neither is WASD/Space/Esc.
-            UiFactory.CreateText(panelRect, "WASD move | Space jump | Ctrl crouch | C crawl | Shift sprint | Esc pause",
-                12, new Vector2(0, -45), new Vector2(250, 40));
-            UiFactory.CreateText(panelRect, "Sprint", 12, new Vector2(-80, -80), new Vector2(60, 20));
-            _manaBarFill = UiFactory.CreateBar(panelRect, new Vector2(10, -80), new Vector2(120, 16), new Color(0.9f, 0.75f, 0.15f));
+            _hudText = UiFactory.CreateText(panelRect, "", 18, new Vector2(0, 50), new Vector2(240, 50));
+            UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -5), OnLeaveClicked);
+            // The old "WASD move | Space jump | ..." line lived here — removed since it's
+            // now covered by Options (About/How to Play, reachable via Esc mid-game too),
+            // and having it twice was just clutter. The sprint bar is the one thing here
+            // players actually need to glance at mid-play, so it stays.
+            UiFactory.CreateText(panelRect, "Sprint", 12, new Vector2(-80, -55), new Vector2(60, 20));
+            _manaBarFill = UiFactory.CreateBar(panelRect, new Vector2(10, -55), new Vector2(120, 16), new Color(0.9f, 0.75f, 0.15f));
             // A numeric readout alongside the bar, not just for players — it's also the
             // easiest way to tell "mana isn't draining" (a real gameplay bug) apart from
             // "the bar just isn't rendering the fill" (a UI-only one).
-            _manaText = UiFactory.CreateText(panelRect, "100%", 12, new Vector2(95, -80), new Vector2(50, 20));
+            _manaText = UiFactory.CreateText(panelRect, "100%", 12, new Vector2(95, -55), new Vector2(50, 20));
 
             _minimap = Minimap.Create(_canvas.transform).gameObject;
 
-            // Top-center: match clock + live scoreboard, both driven by MatchManager/
-            // PlayerController's replicated NetworkVariables (see UpdateMatchHud) — every
-            // client already has local copies of these, no extra networking needed here.
-            var matchPanelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(200, 150));
+            // Top-center: just the match clock now — the scoreboard moved to a Hold-Tab
+            // overlay (BuildTabScoreboardPanel) instead of sitting on screen permanently.
+            var matchPanelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(180, 70));
             matchPanelRect.anchorMin = matchPanelRect.anchorMax = new Vector2(0.5f, 1f);
             matchPanelRect.pivot = new Vector2(0.5f, 1f);
             matchPanelRect.anchoredPosition = new Vector2(0, -16);
             _matchHudPanel = matchPanelRect.gameObject;
-            _timerText = UiFactory.CreateText(matchPanelRect, "5:00", 26, new Vector2(0, 55), new Vector2(180, 36));
-            _scoreboardText = UiFactory.CreateText(matchPanelRect, "", 16, new Vector2(0, -10), new Vector2(180, 100));
+            _timerText = UiFactory.CreateText(matchPanelRect, "5:00", 28, Vector2.zero, new Vector2(160, 50));
+        }
+
+        // Hold Tab to see the full scoreboard as a table (Player | Score) — moved out of
+        // the always-on top-center panel, which now just shows the clock. A local-only
+        // overlay like Pause/Lobby, not part of ShowOnly's exclusive set.
+        private void BuildTabScoreboardPanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(320, 260));
+            _tabScoreboardPanel = panelRect.gameObject;
+            _tabScoreboardPanel.SetActive(false);
+            UiFactory.CreateText(panelRect, "Scoreboard", 24, new Vector2(0, 100), new Vector2(280, 36));
+
+            _tabNamesText = UiFactory.CreateText(panelRect, "", 16, new Vector2(-70, 20), new Vector2(160, 160));
+            _tabNamesText.alignment = TextAnchor.UpperLeft;
+
+            _tabScoresText = UiFactory.CreateText(panelRect, "", 16, new Vector2(90, 20), new Vector2(80, 160));
+            _tabScoresText.alignment = TextAnchor.UpperRight;
         }
 
         private void ShowOnly(GameObject panel)
@@ -776,17 +813,16 @@ namespace CubeArena.Client
                 _cameraFollow = follow;
             }
 
-            _hudText.text = $"Slot {player.SlotIndex}";
-            _hudText.color = PlayerColors.Get(player.SlotIndex);
-
             // Chosen at Character Select but never sent anywhere before now — see
             // PlayerController.SubmitDisplayName. FixedString32Bytes can hold at most 29
             // UTF-8 bytes (32 minus its own length header), so this is trimmed well under
-            // that even for names full of multi-byte characters.
+            // that even for names full of multi-byte characters. Falls back to the
+            // slot's color name ("Red"/"Blue"/"Green"/"Yellow") instead of "Slot N" —
+            // still unique per player, but legible without knowing what a "slot" is.
             var displayName = _displayNameField.text?.Trim();
             if (string.IsNullOrEmpty(displayName))
             {
-                displayName = $"Slot {player.SlotIndex}";
+                displayName = PlayerColors.GetName(player.SlotIndex);
             }
             else if (displayName.Length > 16)
             {
@@ -794,6 +830,10 @@ namespace CubeArena.Client
             }
 
             player.SubmitDisplayName(displayName);
+
+            _hudText.text = $"You are {displayName}";
+            _hudText.color = PlayerColors.Get(player.SlotIndex);
+
             _localPlayer = player;
             ShowOnly(_hudPanel);
 
