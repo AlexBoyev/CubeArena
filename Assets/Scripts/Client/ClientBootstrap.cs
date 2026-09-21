@@ -40,24 +40,35 @@ namespace CubeArena.Client
         private GameObject _pausePanel;
         private GameObject _lobbyPanel;
         private GameObject _tabScoreboardPanel;
+        private GameObject _gameOverPanel;
         private GameObject _minimap;
         private PlayerController _localPlayer;
         private CameraFollow _cameraFollow;
         private bool _isPaused;
+        private bool _canRejoin;
         private Text _lobbyStatusText;
         private Button _startMatchButton;
         private Text _loginStatus;
         private Text _selectStatus;
-        private Text _hudText;
         private Text _timerText;
         private Text _tabNamesText;
         private Text _tabScoresText;
+        private Text _gameOverResultText;
+        private Text _gameOverNamesText;
+        private Text _gameOverScoresText;
+        private Image _hpBarFill;
+        private Text _hpText;
         private Image _manaBarFill;
         private Text _manaText;
+        private Text _quickPlayButtonText;
         private Image _menuBackground;
         private CanvasGroup _fadeGroup;
         private Coroutine _fadeCoroutine;
         private float _matchHudRefreshTimer;
+        // At most 4 entries, refreshed every UpdateMatchHud tick (250ms) — kept around so
+        // OnDisconnected can show a final scoreboard on the Game Over screen even after
+        // every PlayerController has already been despawned by the disconnect itself.
+        private readonly List<(string Name, int Score)> _lastKnownScoreboard = new();
         private InputField _serverField;
         private InputField _emailField;
         private InputField _passwordField;
@@ -120,20 +131,22 @@ namespace CubeArena.Client
 
                 // Every frame, not throttled like UpdateMatchHud — it drains/regens fast
                 // enough (see MovementConstants.SprintMana*) that a 4x/second update would
-                // visibly stair-step.
+                // visibly stair-step. Solid blue/red rather than the mana bar's earlier
+                // green/yellow/red level tint — standard HP-red/mana-blue convention, and
+                // now that there's an actual HP bar next to it, color is what tells them
+                // apart at a glance.
                 if (_localPlayer != null && _manaBarFill != null)
                 {
-                    var fraction = _localPlayer.Mana / MovementConstants.SprintManaMax;
-                    _manaBarFill.fillAmount = fraction;
-                    _manaText.text = $"{Mathf.RoundToInt(fraction * 100f)}%";
-                    // Red band matches MovementConstants.SprintResumeFraction (30%) — the
-                    // same point sprint actually re-enables after hitting empty, so the
-                    // color is a real signal, not an arbitrary gradient.
-                    _manaBarFill.color = fraction >= 0.6f
-                        ? new Color(0.3f, 0.85f, 0.3f)
-                        : fraction >= MovementConstants.SprintResumeFraction
-                            ? new Color(0.9f, 0.75f, 0.15f)
-                            : new Color(0.85f, 0.25f, 0.25f);
+                    var manaFraction = _localPlayer.Mana / MovementConstants.SprintManaMax;
+                    _manaBarFill.fillAmount = manaFraction;
+                    _manaText.text = $"{Mathf.RoundToInt(manaFraction * 100f)}%";
+                }
+
+                if (_localPlayer != null && _hpBarFill != null)
+                {
+                    var hpFraction = _localPlayer.Health / PlayerController.MaxHealth;
+                    _hpBarFill.fillAmount = hpFraction;
+                    _hpText.text = $"{Mathf.RoundToInt(hpFraction * 100f)}%";
                 }
 
                 // Hold Tab for the full scoreboard — suppressed while paused so it doesn't
@@ -228,6 +241,9 @@ namespace CubeArena.Client
             {
                 var remaining = Mathf.Max(0, Mathf.CeilToInt(MatchManager.Instance.TimeRemaining));
                 _timerText.text = $"{remaining / 60}:{remaining % 60:D2}";
+                // A plain countdown doesn't communicate urgency on its own — turning
+                // reddish under a minute left does, without needing to read the number.
+                _timerText.color = remaining <= 60 ? new Color(0.95f, 0.3f, 0.3f) : Color.white;
             }
 
             // FindObjectsByType also picks up the local, never-spawned player template
@@ -238,6 +254,7 @@ namespace CubeArena.Client
             Array.Sort(players, (a, b) => b.Score.CompareTo(a.Score));
             var names = new StringBuilder();
             var scores = new StringBuilder();
+            _lastKnownScoreboard.Clear();
             foreach (var player in players)
             {
                 if (!player.IsSpawned)
@@ -251,6 +268,7 @@ namespace CubeArena.Client
                 var name = string.IsNullOrEmpty(player.DisplayName) ? PlayerColors.GetName(player.SlotIndex) : player.DisplayName;
                 names.AppendLine(name);
                 scores.AppendLine(player.Score.ToString());
+                _lastKnownScoreboard.Add((name, player.Score));
             }
 
             _tabNamesText.text = names.ToString();
@@ -331,6 +349,7 @@ namespace CubeArena.Client
             BuildLoginPanel();
             BuildCharacterSelectPanel();
             BuildConnectingPanel();
+            BuildGameOverPanel();
             BuildHud();
             BuildPausePanel();
             BuildLobbyPanel();
@@ -493,7 +512,8 @@ namespace CubeArena.Client
             _characterSelectPanel = panelRect.gameObject;
             UiFactory.CreateText(panelRect, "Character Select", 24, new Vector2(0, 90), new Vector2(300, 40));
             _displayNameField = UiFactory.CreateInputField(panelRect, "display name", new Vector2(0, 30));
-            UiFactory.CreateButton(panelRect, "Quick Play", new Vector2(0, -30), OnQuickPlayClicked);
+            var quickPlayButton = UiFactory.CreateButton(panelRect, "Quick Play", new Vector2(0, -30), OnQuickPlayClicked);
+            _quickPlayButtonText = quickPlayButton.GetComponentInChildren<Text>();
             _selectStatus = UiFactory.CreateText(panelRect, "", 14, new Vector2(0, -90), new Vector2(340, 40));
             UiFactory.CreateButton(panelRect, "Back", new Vector2(0, -125), OnBackClicked, new Vector2(120, 36));
         }
@@ -507,23 +527,28 @@ namespace CubeArena.Client
 
         private void BuildHud()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 170));
+            // Own name is already on the nameplate above the character, and Leave is one
+            // click away via Esc -> Pause -> Leave Match — this corner used to duplicate
+            // both, which was pure clutter. HP/Mana are the only things worth a permanent
+            // glance mid-play.
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(250, 110));
             panelRect.anchorMin = panelRect.anchorMax = new Vector2(0f, 1f);
             panelRect.pivot = new Vector2(0f, 1f);
             panelRect.anchoredPosition = new Vector2(16, -16);
             _hudPanel = panelRect.gameObject;
-            _hudText = UiFactory.CreateText(panelRect, "", 18, new Vector2(0, 50), new Vector2(240, 50));
-            UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -5), OnLeaveClicked);
-            // The old "WASD move | Space jump | ..." line lived here — removed since it's
-            // now covered by Options (About/How to Play, reachable via Esc mid-game too),
-            // and having it twice was just clutter. The sprint bar is the one thing here
-            // players actually need to glance at mid-play, so it stays.
-            UiFactory.CreateText(panelRect, "Sprint", 12, new Vector2(-80, -55), new Vector2(60, 20));
-            _manaBarFill = UiFactory.CreateBar(panelRect, new Vector2(10, -55), new Vector2(120, 16), new Color(0.9f, 0.75f, 0.15f));
+
+            // Health has no gameplay behind it yet (nothing damages a player) — this is
+            // scaffolding for whenever combat gets designed, always showing full for now.
+            UiFactory.CreateText(panelRect, "HP", 12, new Vector2(-90, 25), new Vector2(40, 20));
+            _hpBarFill = UiFactory.CreateBar(panelRect, new Vector2(10, 25), new Vector2(120, 16), new Color(0.85f, 0.2f, 0.2f));
+            _hpText = UiFactory.CreateText(panelRect, "100%", 12, new Vector2(95, 25), new Vector2(50, 20));
+
+            UiFactory.CreateText(panelRect, "MP", 12, new Vector2(-90, -20), new Vector2(40, 20));
+            _manaBarFill = UiFactory.CreateBar(panelRect, new Vector2(10, -20), new Vector2(120, 16), new Color(0.2f, 0.45f, 0.9f));
             // A numeric readout alongside the bar, not just for players — it's also the
             // easiest way to tell "mana isn't draining" (a real gameplay bug) apart from
             // "the bar just isn't rendering the fill" (a UI-only one).
-            _manaText = UiFactory.CreateText(panelRect, "100%", 12, new Vector2(95, -55), new Vector2(50, 20));
+            _manaText = UiFactory.CreateText(panelRect, "100%", 12, new Vector2(95, -20), new Vector2(50, 20));
 
             _minimap = Minimap.Create(_canvas.transform).gameObject;
 
@@ -554,6 +579,27 @@ namespace CubeArena.Client
             _tabScoresText.alignment = TextAnchor.UpperRight;
         }
 
+        // Shown instead of going straight to character select when the disconnect reason
+        // is the match timer running out (see OnDisconnected) — a real result screen
+        // instead of just a status line, with the final scoreboard (from
+        // _lastKnownScoreboard, snapshotted just before everyone got disconnected, since
+        // every PlayerController is gone by the time this shows).
+        private void BuildGameOverPanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(380, 380));
+            _gameOverPanel = panelRect.gameObject;
+            UiFactory.CreateText(panelRect, "Match Over", 28, new Vector2(0, 150), new Vector2(320, 40));
+            _gameOverResultText = UiFactory.CreateText(panelRect, "", 16, new Vector2(0, 105), new Vector2(340, 60));
+
+            UiFactory.CreateText(panelRect, "Final Scores", 18, new Vector2(0, 55), new Vector2(300, 30));
+            _gameOverNamesText = UiFactory.CreateText(panelRect, "", 16, new Vector2(-70, -25), new Vector2(160, 160));
+            _gameOverNamesText.alignment = TextAnchor.UpperLeft;
+            _gameOverScoresText = UiFactory.CreateText(panelRect, "", 16, new Vector2(90, -25), new Vector2(80, 160));
+            _gameOverScoresText.alignment = TextAnchor.UpperRight;
+
+            UiFactory.CreateButton(panelRect, "Continue", new Vector2(0, -165), OnGameOverContinueClicked, new Vector2(200, 50));
+        }
+
         private void ShowOnly(GameObject panel)
         {
             // Skip on the very first call (startup, nothing to transition from) and on a
@@ -567,6 +613,7 @@ namespace CubeArena.Client
             _loginPanel.SetActive(panel == _loginPanel);
             _characterSelectPanel.SetActive(panel == _characterSelectPanel);
             _connectingPanel.SetActive(panel == _connectingPanel);
+            _gameOverPanel.SetActive(panel == _gameOverPanel);
             _hudPanel.SetActive(panel == _hudPanel);
             _minimap.SetActive(panel == _hudPanel);
             _matchHudPanel.SetActive(panel == _hudPanel);
@@ -831,9 +878,6 @@ namespace CubeArena.Client
 
             player.SubmitDisplayName(displayName);
 
-            _hudText.text = $"You are {displayName}";
-            _hudText.color = PlayerColors.Get(player.SlotIndex);
-
             _localPlayer = player;
             ShowOnly(_hudPanel);
 
@@ -844,11 +888,24 @@ namespace CubeArena.Client
             RefreshCursorState();
         }
 
+        // The reason string ServerBootstrap.BuildMatchEndReason sends always starts with
+        // this — used to tell "the match ended" apart from every other disconnect cause
+        // (deliberate Leave, timeout, crash), which is what decides Game Over vs. plain
+        // character select, and whether Quick Play should read "Rejoin Match".
+        private const string MatchEndedReasonPrefix = "Match ended";
+
         private void OnDisconnected(ulong clientId)
         {
             var reason = NetworkManager.Singleton != null ? NetworkManager.Singleton.DisconnectReason : null;
-            _selectStatus.text = string.IsNullOrEmpty(reason) ? "Disconnected." : $"Disconnected: {reason}";
-            ShowOnly(_characterSelectPanel);
+            var isMatchEnd = !string.IsNullOrEmpty(reason) && reason.StartsWith(MatchEndedReasonPrefix);
+
+            // A match ending starts a fresh lobby server-side (see ServerBootstrap.
+            // OnMatchEnded/MatchManager.ResetForNewRound) — nothing to "rejoin" there, it's
+            // just the next round, so Quick Play stays Quick Play. Any other disconnect
+            // (Leave Match, a timeout, a crash) leaves the existing confirm/release/rejoin
+            // grace period intact, so quick-playing again is really a rejoin.
+            _canRejoin = !isMatchEnd;
+            _quickPlayButtonText.text = _canRejoin ? "Rejoin Match" : "Quick Play";
 
             _localPlayer = null;
             _cameraFollow = null;
@@ -858,6 +915,44 @@ namespace CubeArena.Client
 
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
+
+            if (isMatchEnd)
+            {
+                ShowGameOver(reason);
+            }
+            else
+            {
+                _selectStatus.text = string.IsNullOrEmpty(reason) ? "Disconnected." : $"Disconnected: {reason}";
+                ShowOnly(_characterSelectPanel);
+            }
+        }
+
+        private void ShowGameOver(string reason)
+        {
+            // The trailing "quick play again..." hint is redundant here — there's a
+            // dedicated Continue button right below it.
+            const string trailingHint = " — quick play again to start a new match.";
+            var resultLine = reason.EndsWith(trailingHint) ? reason[..^trailingHint.Length] : reason;
+            _gameOverResultText.text = resultLine;
+
+            var names = new StringBuilder();
+            var scores = new StringBuilder();
+            foreach (var (name, score) in _lastKnownScoreboard)
+            {
+                names.AppendLine(name);
+                scores.AppendLine(score.ToString());
+            }
+
+            _gameOverNamesText.text = names.ToString();
+            _gameOverScoresText.text = scores.ToString();
+
+            ShowOnly(_gameOverPanel);
+        }
+
+        private void OnGameOverContinueClicked()
+        {
+            _selectStatus.text = "";
+            ShowOnly(_characterSelectPanel);
         }
 
         private void OnLeaveClicked()

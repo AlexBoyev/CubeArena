@@ -87,6 +87,15 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<bool> _sprintExhausted = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        // Placeholder for future combat — nothing currently damages or heals a player, so
+        // this always reads as full. Wired through as a real replicated value (not just a
+        // hardcoded UI constant) so whatever adds damage later only needs to write here,
+        // not touch the HUD at all.
+        public const float MaxHealth = 100f;
+
+        private readonly NetworkVariable<float> _health = new(
+            MaxHealth, writePerm: NetworkVariableWritePermission.Server);
+
         private readonly NetworkVariable<int> _score = new(
             writePerm: NetworkVariableWritePermission.Server);
 
@@ -132,6 +141,7 @@ namespace CubeArena.Shared
         public int SlotIndex => _slotIndex.Value;
         public int Score => _score.Value;
         public float Mana => _mana.Value;
+        public float Health => _health.Value;
         public string DisplayName => _displayName.Value.ToString();
 
         // Server-only: ServerBootstrap listens for this to mirror each player's score
