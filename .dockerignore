@@ -6,6 +6,7 @@ Temp/
 Logs/
 UserSettings/
 docs/
-Builds/
+Builds/*
+!Builds/LinuxServer
 Play/
 *.log
