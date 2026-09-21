@@ -157,7 +157,8 @@ namespace CubeArena.Server
             var matchManagerInstance = UnityEngine.Object.Instantiate(matchManagerTemplate);
             matchManagerInstance.GetComponent<NetworkObject>().Spawn();
             _matchManager = matchManagerInstance.GetComponent<MatchManager>();
-            _matchManager.MatchEnded += OnMatchEnded;
+            _matchManager.MatchEnded += () => EndMatch(BuildMatchEndReason());
+            _matchManager.VoteEndTriggered += () => EndMatch(BuildVoteEndReason());
 
             SpawnPickups();
         }
@@ -179,14 +180,15 @@ namespace CubeArena.Server
 
         // A leaving player only ever affects their own slot (OnClientDisconnectCallback
         // above) — the server, and everyone else's session, keeps running regardless.
-        // This is the other half: a hard cap (MatchManager.MatchDurationSeconds) on how
-        // long a match can run before everyone's sent back to character select and a
-        // fresh round starts, rather than one match running forever. The server process
-        // itself is untouched either way — quick play can match players into it again
-        // immediately after.
-        private void OnMatchEnded()
+        // This handles both ways a round actually ends: the clock running out
+        // (MatchManager.MatchEnded) or a player-vote majority (MatchManager.
+        // VoteEndTriggered) — same cleanup either way, just a different reason string
+        // (see BuildMatchEndReason/BuildVoteEndReason), which is what tells the client
+        // whether to offer a rejoin (timer) or send everyone to the main menu (vote — see
+        // ClientBootstrap.OnDisconnected). The server process itself is untouched either
+        // way — quick play can match players into it again immediately after.
+        private void EndMatch(string reason)
         {
-            var reason = BuildMatchEndReason();
             var connectedClientIds = new List<ulong>(_networkManager.ConnectedClientsIds);
             foreach (var clientId in connectedClientIds)
             {
@@ -207,10 +209,14 @@ namespace CubeArena.Server
             _matchManager.ResetForNewRound();
         }
 
-        private static string BuildMatchEndReason()
-        {
-            const string suffix = " — quick play again to start a new match.";
+        private static string BuildMatchEndReason() =>
+            FormatMatchResult("Match ended (5 minute time limit)") + " — quick play again to start a new match.";
 
+        private static string BuildVoteEndReason() =>
+            FormatMatchResult("Vote ended the match");
+
+        private static string FormatMatchResult(string prefix)
+        {
             PlayerController winner = null;
             var highScore = 0;
             var tiedWithHighScore = false;
@@ -230,16 +236,16 @@ namespace CubeArena.Server
 
             if (winner == null)
             {
-                return "Match ended (5 minute time limit) — nobody scored." + suffix;
+                return $"{prefix} — nobody scored.";
             }
 
             if (tiedWithHighScore)
             {
-                return $"Match ended (5 minute time limit) — tied at {highScore} point(s)!" + suffix;
+                return $"{prefix} — tied at {highScore} point(s)!";
             }
 
             var winnerName = string.IsNullOrEmpty(winner.DisplayName) ? PlayerColors.GetName(winner.SlotIndex) : winner.DisplayName;
-            return $"Match ended (5 minute time limit) — {winnerName} wins with {highScore} point(s)!" + suffix;
+            return $"{prefix} — {winnerName} wins with {highScore} point(s)!";
         }
 
         private async Task ConfirmSlotSafeAsync(Guid userId)

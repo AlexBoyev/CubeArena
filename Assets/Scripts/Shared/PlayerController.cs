@@ -75,26 +75,30 @@ namespace CubeArena.Shared
         // writes it; the owner's own prediction only reads it (to decide whether it's
         // allowed to predict a sprint speed boost), never spends it locally, so there's
         // nothing to reconcile.
-        private readonly NetworkVariable<float> _mana = new(
-            MovementConstants.SprintManaMax, writePerm: NetworkVariableWritePermission.Server);
+        private readonly NetworkVariable<float> _stamina = new(
+            MovementConstants.StaminaMax, writePerm: NetworkVariableWritePermission.Server);
 
-        // Hysteresis latch on top of _mana: true from the moment mana hits 0 until it
-        // recovers to MovementConstants.SprintResumeFraction, gating sprint the whole
-        // time it's true regardless of _mana ticking back above 0 in between. Without
+        // Hysteresis latch on top of _stamina: true from the moment it hits 0 until it
+        // recovers to MovementConstants.StaminaResumeFraction, gating sprint the whole
+        // time it's true regardless of _stamina ticking back above 0 in between. Without
         // this, drain (tick N) and regen (tick N+1) fighting right at the 0 boundary let
-        // mana bounce between ~0 and a fraction of a regen-tick forever, which read as
+        // it bounce between ~0 and a fraction of a regen-tick forever, which read as
         // "infinite sprint at 0-1%" — a real exploit, not just a display glitch.
         private readonly NetworkVariable<bool> _sprintExhausted = new(
             writePerm: NetworkVariableWritePermission.Server);
 
-        // Placeholder for future combat — nothing currently damages or heals a player, so
-        // this always reads as full. Wired through as a real replicated value (not just a
-        // hardcoded UI constant) so whatever adds damage later only needs to write here,
-        // not touch the HUD at all.
+        // Placeholders for future combat/abilities — nothing currently damages a player or
+        // spends Mana, so both always read as full. Wired through as real replicated
+        // values (not just hardcoded UI constants) so whatever adds that gameplay later
+        // only needs to write here, not touch the HUD at all.
         public const float MaxHealth = 100f;
+        public const float MaxMana = 100f;
 
         private readonly NetworkVariable<float> _health = new(
             MaxHealth, writePerm: NetworkVariableWritePermission.Server);
+
+        private readonly NetworkVariable<float> _mana = new(
+            MaxMana, writePerm: NetworkVariableWritePermission.Server);
 
         private readonly NetworkVariable<int> _score = new(
             writePerm: NetworkVariableWritePermission.Server);
@@ -140,8 +144,9 @@ namespace CubeArena.Shared
 
         public int SlotIndex => _slotIndex.Value;
         public int Score => _score.Value;
-        public float Mana => _mana.Value;
+        public float Stamina => _stamina.Value;
         public float Health => _health.Value;
+        public float Mana => _mana.Value;
         public string DisplayName => _displayName.Value.ToString();
 
         // Server-only: ServerBootstrap listens for this to mirror each player's score
@@ -419,15 +424,15 @@ namespace CubeArena.Shared
         {
             _predictedEffectivePose = ApplyPoseToController(_pose.Value);
 
-            // Sprint is gated on mana but never spent here — _mana is server-authoritative
-            // (see SimulateMovement) and this is only a same-frame local guess so the
-            // speed boost feels instant; the server's own gate is what actually matters
-            // for fairness, and the position-reconcile below already absorbs the odd
-            // mispredicted tick. Doesn't require actually moving — holding Shift while
-            // standing still spends mana too, same as SimulateMovement below, so there's
-            // no "why didn't it drain" case where the bar just looks stuck. Gated on
-            // _sprintExhausted (server-authoritative hysteresis), not a raw _mana > 0
-            // check — see its declaration.
+            // Sprint is gated on stamina but never spent here — _stamina is server-
+            // authoritative (see SimulateMovement) and this is only a same-frame local
+            // guess so the speed boost feels instant; the server's own gate is what
+            // actually matters for fairness, and the position-reconcile below already
+            // absorbs the odd mispredicted tick. Doesn't require actually moving — holding
+            // Shift while standing still spends stamina too, same as SimulateMovement
+            // below, so there's no "why didn't it drain" case where the bar just looks
+            // stuck. Gated on _sprintExhausted (server-authoritative hysteresis), not a
+            // raw _stamina > 0 check — see its declaration.
             var sprinting = _sprintHeld.Value && _predictedEffectivePose == PlayerPose.Standing && !_sprintExhausted.Value;
             var speedMultiplier = SpeedMultiplierFor(_predictedEffectivePose) * (sprinting ? MovementConstants.SprintSpeedMultiplier : 1f);
 
@@ -527,33 +532,33 @@ namespace CubeArena.Shared
             var effectivePose = ApplyPoseToController(_pose.Value);
             _effectivePose.Value = effectivePose;
 
-            // Hysteresis latch: once mana is fully drained, sprint stays locked out until
-            // it's recovered back up to SprintResumeFraction, not just "> 0" — see
+            // Hysteresis latch: once stamina is fully drained, sprint stays locked out
+            // until it's recovered back up to StaminaResumeFraction, not just "> 0" — see
             // _sprintExhausted's declaration for why a plain > 0 check let sprint drain
             // and regen fight each other forever right at the 0 boundary.
-            if (_mana.Value <= 0f)
+            if (_stamina.Value <= 0f)
             {
                 _sprintExhausted.Value = true;
             }
-            else if (_mana.Value >= MovementConstants.SprintManaMax * MovementConstants.SprintResumeFraction)
+            else if (_stamina.Value >= MovementConstants.StaminaMax * MovementConstants.StaminaResumeFraction)
             {
                 _sprintExhausted.Value = false;
             }
 
             // Sprint only while actually standing — holding Shift while crouched/crawling
             // drains nothing (deliberately doesn't require movement too: holding Shift
-            // always spends mana, so there's no silent no-op case that reads as "sprint
+            // always spends stamina, so there's no silent no-op case that reads as "sprint
             // just doesn't work").
             var wantsSprint = _sprintHeld.Value && effectivePose == PlayerPose.Standing && !_sprintExhausted.Value;
             bool sprinting;
             if (wantsSprint)
             {
-                _mana.Value = Mathf.Max(0f, _mana.Value - MovementConstants.SprintManaDrainPerSecond * deltaTime);
+                _stamina.Value = Mathf.Max(0f, _stamina.Value - MovementConstants.StaminaDrainPerSecond * deltaTime);
                 sprinting = true;
             }
             else
             {
-                _mana.Value = Mathf.Min(MovementConstants.SprintManaMax, _mana.Value + MovementConstants.SprintManaRegenPerSecond * deltaTime);
+                _stamina.Value = Mathf.Min(MovementConstants.StaminaMax, _stamina.Value + MovementConstants.StaminaRegenPerSecond * deltaTime);
                 sprinting = false;
             }
 

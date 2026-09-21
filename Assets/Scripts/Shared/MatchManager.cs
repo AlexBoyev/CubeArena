@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using Unity.Netcode;
 using UnityEngine;
@@ -19,6 +20,13 @@ namespace CubeArena.Shared
         // next round once the clock runs out.
         public event Action MatchEnded;
 
+        // Server-only: ServerBootstrap subscribes to end the match early via player vote
+        // (see CastEndMatchVoteServerRpc) — a distinct event/disconnect reason from
+        // MatchEnded so the client can tell "the 5-minute clock ran out" (offers a rejoin
+        // into the fresh lobby) apart from "everyone agreed to stop" (sends everyone to
+        // the main menu instead).
+        public event Action VoteEndTriggered;
+
         private readonly NetworkVariable<float> _timeRemaining = new(
             MatchDurationSeconds, writePerm: NetworkVariableWritePermission.Server);
 
@@ -29,10 +37,19 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<bool> _matchStarted = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        // Server-only: who's voted to end the match early this round — a plain field, not
+        // a NetworkVariable, since only the count (below) needs replicating, not each
+        // individual voter's identity.
+        private readonly HashSet<ulong> _endMatchVotes = new();
+
+        private readonly NetworkVariable<int> _endMatchVoteCount = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
         private bool _hasEnded;
 
         public float TimeRemaining => _timeRemaining.Value;
         public bool MatchStarted => _matchStarted.Value;
+        public int EndMatchVoteCount => _endMatchVoteCount.Value;
 
         public override void OnNetworkSpawn()
         {
@@ -84,6 +101,31 @@ namespace CubeArena.Shared
             }
         }
 
+        // Client-callable: the pause menu's "Vote to End Match" button, and the vote
+        // popup's own "Vote Yes" button, both call this. Idempotent (a HashSet, not a
+        // counter) so clicking it more than once can't inflate the tally.
+        public void CastEndMatchVote() => CastEndMatchVoteServerRpc();
+
+        [ServerRpc(RequireOwnership = false)]
+        private void CastEndMatchVoteServerRpc(ServerRpcParams rpcParams = default)
+        {
+            if (!_matchStarted.Value || _hasEnded || NetworkManager == null)
+            {
+                return; // nothing to vote to end
+            }
+
+            _endMatchVotes.Add(rpcParams.Receive.SenderClientId);
+            _endMatchVoteCount.Value = _endMatchVotes.Count;
+
+            // Majority of currently connected players, not a fixed threshold — fair
+            // regardless of whether all 4 slots are filled.
+            if (_endMatchVotes.Count * 2 > NetworkManager.ConnectedClientsIds.Count)
+            {
+                _hasEnded = true;
+                VoteEndTriggered?.Invoke();
+            }
+        }
+
         // "Host" = whoever's been connected longest (the lowest client id), recomputed on
         // demand rather than cached — good enough for a private game among friends without
         // needing any extra state if the original host happens to leave before starting.
@@ -109,6 +151,8 @@ namespace CubeArena.Shared
             _timeRemaining.Value = MatchDurationSeconds;
             _matchStarted.Value = false;
             _hasEnded = false;
+            _endMatchVotes.Clear();
+            _endMatchVoteCount.Value = 0;
         }
 
         // Same runtime-prefab requirements as PlayerController.CreateTemplate — see its
