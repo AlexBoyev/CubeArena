@@ -235,6 +235,23 @@ namespace CubeArena.Shared
 
         private void Update()
         {
+            // The actual cause of "white person standing in the middle of the map": every
+            // client keeps a local, never-spawned copy of this prefab around (see
+            // CreateTemplate's comment — ConnectToGameServer builds one purely so NGO has
+            // something to register), parked far below the arena at
+            // TemplateParkPosition. IsOwner/IsServer/IsSpawned all default to false on a
+            // NetworkBehaviour that's never been through NGO's spawn flow, so without this
+            // guard the "else if (!IsServer)" branch below ran on it too, Lerping it every
+            // frame toward _serverPosition.Value's C# default (Vector3.zero — the exact
+            // center of the arena) and leaving it sitting there indefinitely, uncolored
+            // (ApplyColor only ever runs from OnNetworkSpawn, which this object never
+            // gets) — a plain, default-material humanoid parked at the origin forever, not
+            // a stale player from anyone's disconnect at all.
+            if (!IsSpawned)
+            {
+                return;
+            }
+
             if (IsOwner && !IsServer)
             {
                 if (!_inputPaused)
@@ -367,9 +384,10 @@ namespace CubeArena.Shared
             // (see SimulateMovement) and this is only a same-frame local guess so the
             // speed boost feels instant; the server's own gate is what actually matters
             // for fairness, and the position-reconcile below already absorbs the odd
-            // mispredicted tick.
-            var sprinting = _sprintHeld.Value && _predictedEffectivePose == PlayerPose.Standing
-                             && _mana.Value > 0f && _lastSentInput != Vector2.zero;
+            // mispredicted tick. Doesn't require actually moving — holding Shift while
+            // standing still spends mana too, same as SimulateMovement below, so there's
+            // no "why didn't it drain" case where the bar just looks stuck.
+            var sprinting = _sprintHeld.Value && _predictedEffectivePose == PlayerPose.Standing && _mana.Value > 0f;
             var speedMultiplier = SpeedMultiplierFor(_predictedEffectivePose) * (sprinting ? MovementConstants.SprintSpeedMultiplier : 1f);
 
             var grounded = _characterController.isGrounded;
@@ -457,9 +475,11 @@ namespace CubeArena.Shared
             var effectivePose = ApplyPoseToController(_pose.Value);
             _effectivePose.Value = effectivePose;
 
-            // Sprint only while actually standing and actually moving — holding Shift
-            // while stationary, or while crouched/crawling, drains nothing.
-            var wantsSprint = _sprintHeld.Value && effectivePose == PlayerPose.Standing && _currentInput.sqrMagnitude > 0.0001f;
+            // Sprint only while actually standing — holding Shift while crouched/crawling
+            // drains nothing (deliberately doesn't require movement too: holding Shift
+            // always spends mana, so there's no silent no-op case that reads as "sprint
+            // just doesn't work").
+            var wantsSprint = _sprintHeld.Value && effectivePose == PlayerPose.Standing;
             bool sprinting;
             if (wantsSprint && _mana.Value > 0f)
             {
@@ -519,36 +539,49 @@ namespace CubeArena.Shared
         // above wall" while crouched under something). Player stays at their current
         // (smaller) height until they've actually moved somewhere with room to grow.
         //
+        // Tallest-to-shortest, so a blocked growth attempt can fall back to the next
+        // tier down instead of giving up entirely.
+        private static readonly PlayerPose[] PoseTiersTallToShort =
+        {
+            PlayerPose.Standing, PlayerPose.Crouching, PlayerPose.Crawling,
+        };
+
         // Returns the pose that's actually now applied (which may be shorter than
         // requested, if growth was refused) — callers replicate/predict visuals from
         // this, not from the raw requested pose, so the model's squash always matches
         // reality instead of popping to the requested pose the instant a key is
         // released/pressed regardless of whether the collider could actually follow.
+        //
+        // Tries the requested pose first, then progressively shorter ones: releasing
+        // crawl (wanting Standing) while still under a roof that only clears Crouching
+        // used to leave the player stuck at Crawling forever, since the old version only
+        // ever attempted the exact requested height and gave up completely if that one
+        // didn't fit — even though Crouching, one tier down, would have. This walks back
+        // one tier at a time instead of jumping straight from the request to "do nothing".
         private PlayerPose ApplyPoseToController(PlayerPose pose)
         {
-            var desiredHeight = HeightFor(pose);
-            if (desiredHeight > _characterController.height && !HasClearanceForHeight(desiredHeight))
+            var startIndex = Array.IndexOf(PoseTiersTallToShort, pose);
+            for (var i = startIndex; i < PoseTiersTallToShort.Length; i++)
             {
-                return PoseForHeight(_characterController.height);
+                var candidate = PoseTiersTallToShort[i];
+                var candidateHeight = HeightFor(candidate);
+                if (candidateHeight > _characterController.height && !HasClearanceForHeight(candidateHeight))
+                {
+                    continue; // this tier doesn't fit either — try the next shorter one
+                }
+
+                if (!Mathf.Approximately(_characterController.height, candidateHeight))
+                {
+                    _characterController.height = candidateHeight;
+                    _characterController.center = new Vector3(0, candidateHeight / 2f, 0);
+                }
+
+                return candidate;
             }
 
-            if (!Mathf.Approximately(_characterController.height, desiredHeight))
-            {
-                _characterController.height = desiredHeight;
-                _characterController.center = new Vector3(0, desiredHeight / 2f, 0);
-            }
-
-            return pose;
-        }
-
-        private static PlayerPose PoseForHeight(float height)
-        {
-            if (height <= CrawlControllerHeight + 0.01f)
-            {
-                return PlayerPose.Crawling;
-            }
-
-            return height <= CrouchControllerHeight + 0.01f ? PlayerPose.Crouching : PlayerPose.Standing;
+            // Crawling (the shortest tier) is always reachable — shrinking never needs a
+            // clearance check — so the loop above always returns before falling through.
+            return PlayerPose.Crawling;
         }
 
         private static readonly Collider[] ClearanceOverlapBuffer = new Collider[8];

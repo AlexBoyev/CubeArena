@@ -46,6 +46,7 @@ namespace CubeArena.Client
         private Text _timerText;
         private Text _scoreboardText;
         private Image _manaBarFill;
+        private Text _manaText;
         private float _matchHudRefreshTimer;
         private InputField _serverField;
         private InputField _emailField;
@@ -111,7 +112,9 @@ namespace CubeArena.Client
                 // visibly stair-step.
                 if (_localPlayer != null && _manaBarFill != null)
                 {
-                    _manaBarFill.fillAmount = _localPlayer.Mana / MovementConstants.SprintManaMax;
+                    var fraction = _localPlayer.Mana / MovementConstants.SprintManaMax;
+                    _manaBarFill.fillAmount = fraction;
+                    _manaText.text = $"{Mathf.RoundToInt(fraction * 100f)}%";
                 }
             }
 
@@ -344,7 +347,11 @@ namespace CubeArena.Client
             UiFactory.CreateText(panelRect, "WASD move | Space jump | Ctrl crouch | C crawl | Shift sprint | Esc pause",
                 12, new Vector2(0, -45), new Vector2(250, 40));
             UiFactory.CreateText(panelRect, "Sprint", 12, new Vector2(-80, -80), new Vector2(60, 20));
-            _manaBarFill = UiFactory.CreateBar(panelRect, new Vector2(20, -80), new Vector2(140, 16), new Color(0.9f, 0.75f, 0.15f));
+            _manaBarFill = UiFactory.CreateBar(panelRect, new Vector2(10, -80), new Vector2(120, 16), new Color(0.9f, 0.75f, 0.15f));
+            // A numeric readout alongside the bar, not just for players — it's also the
+            // easiest way to tell "mana isn't draining" (a real gameplay bug) apart from
+            // "the bar just isn't rendering the fill" (a UI-only one).
+            _manaText = UiFactory.CreateText(panelRect, "100%", 12, new Vector2(95, -80), new Vector2(50, 20));
 
             _minimap = Minimap.Create(_canvas.transform).gameObject;
 
