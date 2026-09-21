@@ -52,6 +52,14 @@ namespace CubeArena.Server
             var networkManager = GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
             _networkManager = networkManager;
             var transport = GetComponent<UnityTransport>() ?? gameObject.AddComponent<UnityTransport>();
+            // UTP's default is 30 seconds of inactivity before it declares a connection
+            // dead — fine for a flaky-network hiccup, but far too long for the common case
+            // here of a client process just disappearing (crash, force-kill, alt-F4)
+            // without sending a clean disconnect. For half a minute the server (and every
+            // other client) keeps rendering that player standing frozen in place, which is
+            // exactly the recurring "ghost/stale player" complaint. 5s is still generous
+            // for a real network blip but cleans up a dead client far faster.
+            transport.DisconnectTimeoutMS = 5000;
 
             networkManager.NetworkConfig ??= new NetworkConfig();
             networkManager.NetworkConfig.NetworkTransport = transport;

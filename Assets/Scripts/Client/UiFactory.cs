@@ -152,6 +152,36 @@ namespace CubeArena.Client
             return toggle;
         }
 
+        // A simple horizontal gauge (background + fill), for things like the sprint mana
+        // bar — returns the fill Image so the caller can drive it every frame via
+        // fillAmount (0..1).
+        public static Image CreateBar(Transform parent, Vector2 anchoredPosition, Vector2 size, Color fillColor)
+        {
+            var backgroundGo = new GameObject("Bar", typeof(Image));
+            backgroundGo.transform.SetParent(parent, false);
+            var backgroundRect = backgroundGo.GetComponent<RectTransform>();
+            backgroundRect.anchorMin = backgroundRect.anchorMax = new Vector2(0.5f, 0.5f);
+            backgroundRect.anchoredPosition = anchoredPosition;
+            backgroundRect.sizeDelta = size;
+            backgroundGo.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.6f);
+
+            var fillGo = new GameObject("Fill", typeof(Image));
+            fillGo.transform.SetParent(backgroundGo.transform, false);
+            var fillRect = fillGo.GetComponent<RectTransform>();
+            fillRect.anchorMin = Vector2.zero;
+            fillRect.anchorMax = Vector2.one;
+            fillRect.offsetMin = new Vector2(2, 2);
+            fillRect.offsetMax = new Vector2(-2, -2);
+
+            var fillImage = fillGo.GetComponent<Image>();
+            fillImage.type = Image.Type.Filled;
+            fillImage.fillMethod = Image.FillMethod.Horizontal;
+            fillImage.fillOrigin = (int)Image.OriginHorizontal.Left;
+            fillImage.fillAmount = 1f;
+            fillImage.color = fillColor;
+            return fillImage;
+        }
+
         public static Button CreateButton(Transform parent, string label, Vector2 anchoredPosition, UnityEngine.Events.UnityAction onClick, Vector2? size = null)
         {
             var go = new GameObject($"Button_{label}", typeof(Image), typeof(Button));

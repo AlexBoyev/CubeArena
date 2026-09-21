@@ -57,6 +57,27 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<PlayerPose> _pose = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        // What pose the CharacterController actually ended up at, as opposed to _pose
+        // (what the player is asking for) — they differ exactly when ApplyPoseToController
+        // refuses to grow into a taller pose because there's no headroom yet. Remote
+        // viewers' AnimateVisuals reads this (the owner reads its own local prediction
+        // instead — see _predictedEffectivePose) so a player who releases crouch while
+        // still under a low roof keeps looking crouched, instead of the model popping up
+        // to standing height and visibly poking through the roof while the actual collider
+        // (correctly) stays put.
+        private readonly NetworkVariable<PlayerPose> _effectivePose = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
+        private readonly NetworkVariable<bool> _sprintHeld = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
+        // Server-authoritative sprint resource — only SimulateMovement (server) ever
+        // writes it; the owner's own prediction only reads it (to decide whether it's
+        // allowed to predict a sprint speed boost), never spends it locally, so there's
+        // nothing to reconcile.
+        private readonly NetworkVariable<float> _mana = new(
+            MovementConstants.SprintManaMax, writePerm: NetworkVariableWritePermission.Server);
+
         private readonly NetworkVariable<int> _score = new(
             writePerm: NetworkVariableWritePermission.Server);
 
@@ -80,6 +101,8 @@ namespace CubeArena.Shared
         private float _predictedVerticalVelocity; // owner-client-side: local jump/gravity prediction
         private bool _predictedJumpRequested; // owner-client-side: consumed in PredictAndReconcile
         private PlayerPose _lastSentPose; // owner-client-side: last-sent state, for change detection
+        private bool _lastSentSprint; // owner-client-side: last-sent state, for change detection
+        private PlayerPose _predictedEffectivePose = PlayerPose.Standing; // owner-client-side: this frame's local clearance-check result, see _effectivePose
         private bool _inputPaused; // owner-client-side: see SetInputPaused
 
         // Purely cosmetic (client-only — see AnimateVisuals): the swingable limb joints
@@ -99,6 +122,7 @@ namespace CubeArena.Shared
 
         public int SlotIndex => _slotIndex.Value;
         public int Score => _score.Value;
+        public float Mana => _mana.Value;
 
         private void Awake()
         {
@@ -273,6 +297,13 @@ namespace CubeArena.Shared
                     _lastSentPose = desiredPose;
                     SetPoseServerRpc(desiredPose);
                 }
+
+                var sprintHeld = keyboard.leftShiftKey.isPressed;
+                if (sprintHeld != _lastSentSprint)
+                {
+                    _lastSentSprint = sprintHeld;
+                    SetSprintServerRpc(sprintHeld);
+                }
             }
 
             // Resolved to a camera-relative world-space direction here (client-side, where
@@ -330,8 +361,16 @@ namespace CubeArena.Shared
         // something as immediate as a jump.
         private void PredictAndReconcile()
         {
-            ApplyPoseToController(_pose.Value);
-            var speedMultiplier = SpeedMultiplierFor(_pose.Value);
+            _predictedEffectivePose = ApplyPoseToController(_pose.Value);
+
+            // Sprint is gated on mana but never spent here — _mana is server-authoritative
+            // (see SimulateMovement) and this is only a same-frame local guess so the
+            // speed boost feels instant; the server's own gate is what actually matters
+            // for fairness, and the position-reconcile below already absorbs the odd
+            // mispredicted tick.
+            var sprinting = _sprintHeld.Value && _predictedEffectivePose == PlayerPose.Standing
+                             && _mana.Value > 0f && _lastSentInput != Vector2.zero;
+            var speedMultiplier = SpeedMultiplierFor(_predictedEffectivePose) * (sprinting ? MovementConstants.SprintSpeedMultiplier : 1f);
 
             var grounded = _characterController.isGrounded;
             if (_predictedJumpRequested && grounded)
@@ -393,6 +432,12 @@ namespace CubeArena.Shared
             _pose.Value = pose;
         }
 
+        [ServerRpc]
+        private void SetSprintServerRpc(bool held)
+        {
+            _sprintHeld.Value = held;
+        }
+
         private static float SpeedMultiplierFor(PlayerPose pose) => pose switch
         {
             PlayerPose.Crawling => MovementConstants.CrawlSpeedMultiplier,
@@ -409,8 +454,25 @@ namespace CubeArena.Shared
 
         private void SimulateMovement(float deltaTime)
         {
-            ApplyPoseToController(_pose.Value);
-            var speedMultiplier = SpeedMultiplierFor(_pose.Value);
+            var effectivePose = ApplyPoseToController(_pose.Value);
+            _effectivePose.Value = effectivePose;
+
+            // Sprint only while actually standing and actually moving — holding Shift
+            // while stationary, or while crouched/crawling, drains nothing.
+            var wantsSprint = _sprintHeld.Value && effectivePose == PlayerPose.Standing && _currentInput.sqrMagnitude > 0.0001f;
+            bool sprinting;
+            if (wantsSprint && _mana.Value > 0f)
+            {
+                _mana.Value = Mathf.Max(0f, _mana.Value - MovementConstants.SprintManaDrainPerSecond * deltaTime);
+                sprinting = true;
+            }
+            else
+            {
+                _mana.Value = Mathf.Min(MovementConstants.SprintManaMax, _mana.Value + MovementConstants.SprintManaRegenPerSecond * deltaTime);
+                sprinting = false;
+            }
+
+            var speedMultiplier = SpeedMultiplierFor(effectivePose) * (sprinting ? MovementConstants.SprintSpeedMultiplier : 1f);
 
             var grounded = _characterController.isGrounded;
 
@@ -456,21 +518,37 @@ namespace CubeArena.Shared
         // visual head poking out through it (the original bug report: "head is visible
         // above wall" while crouched under something). Player stays at their current
         // (smaller) height until they've actually moved somewhere with room to grow.
-        private void ApplyPoseToController(PlayerPose pose)
+        //
+        // Returns the pose that's actually now applied (which may be shorter than
+        // requested, if growth was refused) — callers replicate/predict visuals from
+        // this, not from the raw requested pose, so the model's squash always matches
+        // reality instead of popping to the requested pose the instant a key is
+        // released/pressed regardless of whether the collider could actually follow.
+        private PlayerPose ApplyPoseToController(PlayerPose pose)
         {
             var desiredHeight = HeightFor(pose);
             if (desiredHeight > _characterController.height && !HasClearanceForHeight(desiredHeight))
             {
-                return;
+                return PoseForHeight(_characterController.height);
             }
 
-            if (Mathf.Approximately(_characterController.height, desiredHeight))
+            if (!Mathf.Approximately(_characterController.height, desiredHeight))
             {
-                return;
+                _characterController.height = desiredHeight;
+                _characterController.center = new Vector3(0, desiredHeight / 2f, 0);
             }
 
-            _characterController.height = desiredHeight;
-            _characterController.center = new Vector3(0, desiredHeight / 2f, 0);
+            return pose;
+        }
+
+        private static PlayerPose PoseForHeight(float height)
+        {
+            if (height <= CrawlControllerHeight + 0.01f)
+            {
+                return PlayerPose.Crawling;
+            }
+
+            return height <= CrouchControllerHeight + 0.01f ? PlayerPose.Crouching : PlayerPose.Standing;
         }
 
         private static readonly Collider[] ClearanceOverlapBuffer = new Collider[8];
@@ -540,7 +618,15 @@ namespace CubeArena.Shared
             // player under a low roof — visually clipping through it even though the
             // real collision shape was already clear. Matching them exactly removes that
             // window entirely.
-            var targetScaleY = _pose.Value switch
+            //
+            // Driven by the *effective* pose (what the collider actually achieved), not
+            // the raw requested _pose — otherwise releasing crouch while still under a
+            // low roof popped the model to standing height even though the collider
+            // (correctly) refused to grow, which is the "player needs to stay crouched
+            // until the collision ends" bug. The owner reads its own zero-latency local
+            // result; remote viewers read the replicated one.
+            var effectivePose = IsOwner && !IsServer ? _predictedEffectivePose : _effectivePose.Value;
+            var targetScaleY = effectivePose switch
             {
                 PlayerPose.Crawling => CrawlVisualScaleY,
                 PlayerPose.Crouching => CrouchVisualScaleY,

@@ -55,15 +55,32 @@ namespace CubeArena.Shared
             }
         }
 
-        // Doesn't avoid ArenaBuilder's fixed obstacle cubes — an occasional pickup landing
-        // inside/behind one is an acceptable simplification for a first pass, since it
-        // self-corrects on the next respawn.
+        // Rejects any candidate that overlaps arena geometry (the ring obstacles, tower,
+        // houses, tunnels, etc.) instead of just picking a bare random point — an earlier
+        // version didn't check this at all, so pickups would occasionally spawn inside or
+        // behind a solid obstacle where they were effectively uncollectable. Checked at
+        // y=0.5 (where the pickup's visual actually sits) with a radius a bit larger than
+        // its own 0.5m cube so it doesn't spawn flush against a wall either.
+        private const float SpawnClearanceRadius = 0.6f;
+        private const int MaxSpawnAttempts = 20;
+
         public static Vector3 GetRandomPosition()
         {
             var half = MovementConstants.ArenaHalfExtent - 3f; // margin from the walls
-            var x = Random.Range(-half, half);
-            var z = Random.Range(-half, half);
-            return new Vector3(x, 0f, z);
+            for (var attempt = 0; attempt < MaxSpawnAttempts; attempt++)
+            {
+                var x = Random.Range(-half, half);
+                var z = Random.Range(-half, half);
+                var candidate = new Vector3(x, 0f, z);
+                if (!Physics.CheckSphere(candidate + Vector3.up * 0.5f, SpawnClearanceRadius, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    return candidate;
+                }
+            }
+
+            // Exhausted every attempt (arena is unexpectedly crowded) — fall back to a
+            // plain random point rather than looping forever.
+            return new Vector3(Random.Range(-half, half), 0f, Random.Range(-half, half));
         }
 
         // Same runtime-prefab requirements as PlayerController.CreateTemplate.

@@ -45,6 +45,7 @@ namespace CubeArena.Client
         private Text _hudText;
         private Text _timerText;
         private Text _scoreboardText;
+        private Image _manaBarFill;
         private float _matchHudRefreshTimer;
         private InputField _serverField;
         private InputField _emailField;
@@ -104,6 +105,14 @@ namespace CubeArena.Client
             if (_hudPanel.activeSelf)
             {
                 UpdateMatchHud();
+
+                // Every frame, not throttled like UpdateMatchHud — it drains/regens fast
+                // enough (see MovementConstants.SprintMana*) that a 4x/second update would
+                // visibly stair-step.
+                if (_localPlayer != null && _manaBarFill != null)
+                {
+                    _manaBarFill.fillAmount = _localPlayer.Mana / MovementConstants.SprintManaMax;
+                }
             }
 
             if (Keyboard.current == null || !Keyboard.current.escapeKey.wasPressedThisFrame)
@@ -323,17 +332,19 @@ namespace CubeArena.Client
 
         private void BuildHud()
         {
-            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 170));
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(260, 220));
             panelRect.anchorMin = panelRect.anchorMax = new Vector2(0f, 1f);
             panelRect.pivot = new Vector2(0f, 1f);
             panelRect.anchoredPosition = new Vector2(16, -16);
             _hudPanel = panelRect.gameObject;
-            _hudText = UiFactory.CreateText(panelRect, "", 18, new Vector2(0, 30), new Vector2(240, 50));
-            UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -35), OnLeaveClicked);
-            // Answers "what button is crawl" in-game rather than only in a changelog —
-            // crawl (C) is easy to miss since it's separate from crouch (Ctrl).
-            UiFactory.CreateText(panelRect, "WASD move | Space jump | Ctrl crouch | C crawl | Esc pause",
-                12, new Vector2(0, -70), new Vector2(250, 40));
+            _hudText = UiFactory.CreateText(panelRect, "", 18, new Vector2(0, 55), new Vector2(240, 50));
+            UiFactory.CreateButton(panelRect, "Leave", new Vector2(0, -10), OnLeaveClicked);
+            // Answers "what button is crawl/sprint" in-game rather than only in a
+            // changelog — both are easy to miss since neither is WASD/Space/Esc.
+            UiFactory.CreateText(panelRect, "WASD move | Space jump | Ctrl crouch | C crawl | Shift sprint | Esc pause",
+                12, new Vector2(0, -45), new Vector2(250, 40));
+            UiFactory.CreateText(panelRect, "Sprint", 12, new Vector2(-80, -80), new Vector2(60, 20));
+            _manaBarFill = UiFactory.CreateBar(panelRect, new Vector2(20, -80), new Vector2(140, 16), new Color(0.9f, 0.75f, 0.15f));
 
             _minimap = Minimap.Create(_canvas.transform).gameObject;
 
@@ -507,6 +518,9 @@ namespace CubeArena.Client
         {
             var networkManager = gameObject.GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
             var transport = gameObject.GetComponent<UnityTransport>() ?? gameObject.AddComponent<UnityTransport>();
+            // Match ServerBootstrap's shortened timeout (see its comment) — keeps both
+            // sides agreeing on how quickly a dead connection gets declared dead.
+            transport.DisconnectTimeoutMS = 5000;
 
             var playerTemplate = PlayerController.CreateTemplate();
 
