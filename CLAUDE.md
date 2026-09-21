@@ -16,17 +16,25 @@ plan.
   (its asymmetric APIs are non-functional on this Unity/Mono runtime — see
   docs/ARCHITECTURE.md's Phase 4 platform findings before touching crypto
   or NGO connection code).
-- This dev machine only has Windows Standalone + WebGL build support
-  installed — no Dedicated Server module for either OS. Local dedicated
-  server builds aren't possible here; the real Linux build happens in CI
-  (`.github/workflows/gameserver.yml`, via GameCI).
+- This dev machine has the Windows Dedicated Server Build Support module
+  installed (`BuildScript.BuildWindowsDedicatedServer`, used by Tier 0
+  hosting/`run-gameserver-native.ps1`) — local Windows dedicated server
+  builds work fine here. It has no Linux Dedicated Server module, so the
+  real Linux build happens in CI (`.github/workflows/gameserver.yml`, via
+  GameCI) instead.
 - **Never hand-edit `.unity`, `.prefab`, or `.meta` files directly.** Make
   scene/prefab changes through the Unity Editor (or generate them via
   Unity's own APIs/tooling), and let Unity own `.meta` file generation.
-- The arena, player cubes, and all UI (login/character-select/HUD) are built
-  entirely from code at runtime (`ArenaBuilder`, `PlayerController.CreateTemplate`,
-  `UiFactory`) — there are no scene-authored GameObjects or prefab assets to
-  edit for any of this; extend the builder code instead.
+- The arena, player cubes, all UI (login/character-select/HUD), and physics
+  crates are built entirely from code at runtime (`ArenaBuilder`,
+  `PlayerController.CreateTemplate`, `UiFactory`, `CrateController.CreateTemplate`)
+  — there are no scene-authored GameObjects or prefab assets to edit for
+  any of this; extend the builder code instead.
+- Player state is hand-rolled replication (`NetworkVariable` + predict/
+  reconcile) everywhere except `CrateController`, which deliberately uses
+  NGO's built-in `NetworkTransform`/`NetworkRigidbody` instead — rigidbody
+  physics is harder to hand-roll well than the simple kinematic pose used
+  for players. See `docs/NETCODE.md` before touching either.
 - `ServerBootstrap`/`ClientBootstrap` auto-run via `#if UNITY_SERVER` /
   `#if !UNITY_SERVER` respectively — both scripts live in every build target
   (no asmdef platform restriction), so this compile-time gate is what keeps

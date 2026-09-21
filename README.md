@@ -27,8 +27,9 @@ backend finds (or spins up) a session with a free slot, issues each player
 a short-lived signed ticket, and hands back the address of a real dedicated
 game server process. The client connects to that server over UDP; the
 server is the sole authority over every player's position. Players see each
-other as coloured cubes (red/blue/green/yellow, one per slot) moving around
-a small arena, with a minimap in the corner.
+other as coloured cubes (one of six colours, one per slot) moving around a
+small arena, with a minimap in the corner and pushable/grabbable/throwable
+physics crates scattered around for good measure.
 
 There is no host-client mode anywhere in this project — even for local
 development, a separate headless server process is what every client
@@ -99,6 +100,12 @@ boot. Full component diagram, sequence diagram, and threat model:
   without a full input-replay buffer — see
   [`docs/NETCODE.md`](docs/NETCODE.md) for exactly what was built and why
   a fuller reconciliation scheme wasn't needed here.
+- **Physics crates use NGO's built-in `NetworkTransform`/`NetworkRigidbody`**
+  instead of the hand-rolled `NetworkVariable` pattern above — the one
+  deliberate exception. Authority moves by changing *who owns the crate*
+  (the server at rest, the holding player while carried) rather than by
+  toggling any sync mode at runtime. Full writeup, including a load-test
+  bandwidth measurement, in [`docs/NETCODE.md`](docs/NETCODE.md).
 - **Crypto note (a real platform finding, not a design choice):**
   `System.Security.Cryptography`'s ECDsa/RSA APIs are non-functional on
   Unity's Mono runtime in a built player. Ticket verification on the game
@@ -121,8 +128,9 @@ objective now:
 
 - **Arena**: a 40x40 flat plane with a boundary wall, an obstacle course
   (a crouch tunnel, a climbable tower, a jump gap, a balance beam, two
-  houses with interior stairs to a loft, and two crawl tunnels), and gold
-  pickups that respawn on collection.
+  houses with interior stairs to a loft, and two crawl tunnels), gold
+  pickups that respawn on collection, and physics crates (8 by default)
+  players can push into, grab, carry, and throw.
 - **Character**: a blocky humanoid (torso/head/arms/legs, all primitive
   cubes) with a walk-cycle limb swing and a nameplate showing the player's
   chosen display name.
@@ -133,7 +141,9 @@ objective now:
   (fits under low obstacles), C to crawl (for the lowest tunnels — crouch
   alone doesn't clear them), Shift to sprint (1.6x speed, gated by a mana
   resource that drains while sprinting and locks out once empty until it
-  recovers to 30%).
+  recovers to 30%). E grabs the nearest crate in front of you (or throws
+  the one you're holding) — walking into a crate you're not holding pushes
+  it instead.
   Esc pauses locally (freezes only your own input/camera — the match keeps
   running for everyone else) and opens Options/Leave from a single menu.
 - **Lobby**: players spawn in and can look around immediately, but movement
@@ -160,8 +170,11 @@ objective now:
 CubeArena/                      # repo root == Unity project root
   Assets/
     Scripts/
-      Shared/                   # netcode messages, constants, colours
-      Client/                   # login UI, connect flow, movement client-side
+      Shared/                   # netcode messages, constants, colours,
+                                 # CrateController (NGO NetworkTransform/
+                                 # NetworkRigidbody physics props)
+      Client/                   # login UI, connect flow, movement client-side,
+                                 # scripted bot mode for load testing
       Server/                   # ServerBootstrap, ticket validation, fleet client
     Editor/BuildScript.cs       # batch-mode build entry points
   Packages/
@@ -244,23 +257,26 @@ Tier 2.
    showing how many players are connected.
 6. Whoever's been connected longest is the host and sees a **Start Match**
    button; everyone else waits until they click it. WASD to move, Space to
-   jump, Ctrl to crouch, C to crawl, Shift to sprint, Esc to pause. Collect
-   gold pickups for points before the 5-minute clock runs out. **Leave**
-   (in the Esc menu) returns you to character select and frees your slot
-   after a short grace period.
+   jump, Ctrl to crouch, C to crawl, Shift to sprint, E to grab/throw a
+   crate, Esc to pause. Collect gold pickups for points before the
+   5-minute clock runs out. **Leave** (in the Esc menu) returns you to
+   character select and frees your slot after a short grace period.
 
 ## Testing
 
-- **Backend**: 55 unit + integration tests (`dotnet test backend/CubeArena.sln`)
+- **Backend**: 59 unit + integration tests (`dotnet test backend/CubeArena.sln`)
   — token issuance/validation/expiry/rotation/reuse-detection, session
   allocation, ticket verification rejection paths (expired, wrong session,
-  replayed `jti`, server full), fleet registration/heartbeat, confirm/release.
-  Integration tests run against a real Postgres via Testcontainers; unit
-  tests use EF Core InMemory + a fake time provider for deterministic
-  expiry testing.
+  replayed `jti`, server full at both 4 and 6 capacity), fleet
+  registration/heartbeat, confirm/release. Integration tests run against a
+  real Postgres via Testcontainers; unit tests use EF Core InMemory + a
+  fake time provider for deterministic expiry testing.
 - **Client/netcode**: verified via live multi-client testing (documented in
   `docs/ROADMAP.md`'s per-phase notes) — real built clients and a real
-  dedicated server, not simulated.
+  dedicated server, not simulated. The crate physics layer was additionally
+  load-tested with 6 scripted bot clients pushing/grabbing/throwing 30
+  crates at once (`CUBEARENA_BOT_MODE`, see `docs/NETCODE.md`), used to
+  measure real per-client bandwidth rather than eyeballing it.
 - CI: `.github/workflows/backend.yml` (build, test, image push to GHCR),
   `gameserver.yml` (GameCI Linux dedicated-server build, image push —
   skips cleanly rather than failing if `UNITY_LICENSE` isn't configured),
