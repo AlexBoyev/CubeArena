@@ -33,6 +33,8 @@ namespace CubeArena.Server
         private FleetClient _fleet;
         private NetworkManager _networkManager;
         private GameObject _pickupTemplate;
+        private GameObject _crateTemplate;
+        private int _crateCount;
         private MatchManager _matchManager;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -58,7 +60,9 @@ namespace CubeArena.Server
 
             var playerTemplate = PlayerController.CreateTemplate();
             _pickupTemplate = PickupController.CreateTemplate();
+            _crateTemplate = CrateController.CreateTemplate();
             var matchManagerTemplate = MatchManager.CreateTemplate();
+            _crateCount = config.CrateCount;
 
             var networkManager = GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
             _networkManager = networkManager;
@@ -87,6 +91,7 @@ namespace CubeArena.Server
             networkManager.NetworkConfig.EnableSceneManagement = false;
             networkManager.AddNetworkPrefab(playerTemplate);
             networkManager.AddNetworkPrefab(_pickupTemplate);
+            networkManager.AddNetworkPrefab(_crateTemplate);
             networkManager.AddNetworkPrefab(matchManagerTemplate);
 
             transport.SetConnectionData(config.AdvertiseHost, config.ListenPort, listenAddress: "0.0.0.0");
@@ -148,6 +153,11 @@ namespace CubeArena.Server
             Debug.Log($"[ServerBootstrap] Listening on 0.0.0.0:{config.ListenPort}, " +
                       $"advertising {config.AdvertiseHost}:{config.ListenPort}, session {_fleet.SessionId}");
 
+            // See BandwidthLogger — this reports the server's aggregate total across every
+            // connected client, not a per-client figure (that's what each client's own log
+            // is for). Runs unconditionally; harmless at normal gameplay traffic levels.
+            StartCoroutine(BandwidthLogger.LogPeriodically("server", networkManager, 5f));
+
             _heartbeatCts = new CancellationTokenSource();
             _ = _fleet.RunHeartbeatLoopAsync(
                 TimeSpan.FromSeconds(10),
@@ -161,11 +171,26 @@ namespace CubeArena.Server
             _matchManager.VoteEndTriggered += () => EndMatch(BuildVoteEndReason());
 
             SpawnPickups();
+            SpawnCrates();
         }
 
         private void OnApplicationQuit()
         {
             _heartbeatCts?.Cancel();
+        }
+
+        // Same shape as SpawnPickups — one shared template/hash, Instantiate +
+        // ServerInitialize + Spawn in a loop. _crateCount defaults to a gameplay-sane
+        // number but is set to 30 for the physics-bandwidth load test (see
+        // docs/NETCODE.md) via CUBEARENA_CRATE_COUNT, no rebuild needed.
+        private void SpawnCrates()
+        {
+            for (var i = 0; i < _crateCount; i++)
+            {
+                var instance = UnityEngine.Object.Instantiate(_crateTemplate);
+                instance.GetComponent<CrateController>().ServerInitialize(PickupController.GetRandomPosition());
+                instance.GetComponent<NetworkObject>().Spawn();
+            }
         }
 
         private void SpawnPickups()

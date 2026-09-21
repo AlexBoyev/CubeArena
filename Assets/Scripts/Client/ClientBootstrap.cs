@@ -96,6 +96,7 @@ namespace CubeArena.Client
         private void Start()
         {
             _config = ClientConfig.FromEnvironment();
+            PlayerController.BotModeEnabled = _config.BotModeEnabled;
 
             ArenaBuilder.Build();
             BuildUi();
@@ -315,6 +316,14 @@ namespace CubeArena.Client
                 ? $"{count}/6 connected — start when everyone's ready."
                 : $"{count}/6 connected — waiting for the host to start...";
             _startMatchButton.gameObject.SetActive(isHost);
+
+            // Bot mode only: nobody's there to click Start Match, so the host bot starts
+            // it itself once enough bots have joined (CUBEARENA_BOT_AUTOSTART_COUNT) —
+            // purely for the load test (docs/NETCODE.md), not real play.
+            if (_config.BotModeEnabled && isHost && count >= _config.BotAutoStartCount)
+            {
+                matchManager.RequestStart();
+            }
         }
 
         // Shows the vote-to-end popup to everyone the instant anyone casts a vote
@@ -914,6 +923,7 @@ namespace CubeArena.Client
             // PlayerController.CreateTemplate's comment for why runtime-only prefabs need
             // that hash assigned manually at all.
             networkManager.AddNetworkPrefab(PickupController.CreateTemplate());
+            networkManager.AddNetworkPrefab(CrateController.CreateTemplate());
             networkManager.AddNetworkPrefab(MatchManager.CreateTemplate());
             networkManager.NetworkConfig.ConnectionData = Encoding.UTF8.GetBytes(result.Ticket);
 
@@ -921,6 +931,12 @@ namespace CubeArena.Client
 
             networkManager.OnClientDisconnectCallback += OnDisconnected;
             networkManager.StartClient();
+
+            // See BandwidthLogger — a client's driver has exactly one connection (to the
+            // game server), so this IS this client's own bandwidth. Runs unconditionally;
+            // harmless at normal gameplay traffic levels, and it's how the bot-mode load
+            // test (docs/NETCODE.md) gets a per-client number out of a headless build.
+            StartCoroutine(BandwidthLogger.LogPeriodically("client", networkManager, 5f));
         }
 
         private void OnLocalPlayerSpawned(PlayerController player)

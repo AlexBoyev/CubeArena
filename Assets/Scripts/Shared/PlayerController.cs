@@ -47,6 +47,9 @@ namespace CubeArena.Shared
         private const float WalkSwingSpeed = 9f; // walk-cycle phase advance per meter traveled
         private const float MaxSwingAngleDeg = 35f;
         private const float PoseLerpSpeed = 8f; // limb-swing smoothing only — pose height/squash snap instantly, see AnimateVisuals
+        private const float ThrowForce = 9f; // meters/second, along camera-forward
+        private const float ThrowUpwardBoost = 2.5f; // meters/second, added so throws arc instead of skimming the ground
+        private const float PushForce = 3f; // impulse applied to an un-held CrateController's Rigidbody on CharacterController contact
 
         private readonly NetworkVariable<Vector3> _serverPosition = new(
             writePerm: NetworkVariableWritePermission.Server);
@@ -326,8 +329,22 @@ namespace CubeArena.Shared
             }
         }
 
+        // Set once, client-side, from ClientConfig at startup — when true, ReadAndSendInput
+        // drives itself via RunBotBehavior instead of reading real keyboard/mouse input.
+        // Exists purely for the 30-crate bandwidth load test (docs/NETCODE.md): it lets
+        // several client processes generate realistic movement/push/grab/throw traffic
+        // without needing synthetic OS-level input injection, which risks landing on the
+        // wrong window if a real client happens to be focused at the same time.
+        public static bool BotModeEnabled;
+
         private void ReadAndSendInput()
         {
+            if (BotModeEnabled)
+            {
+                RunBotBehavior();
+                return;
+            }
+
             var keyboard = Keyboard.current;
             var input = Vector2.zero;
             if (keyboard != null)
@@ -365,6 +382,28 @@ namespace CubeArena.Shared
                     _lastSentSprint = sprintHeld;
                     SetSprintServerRpc(sprintHeld);
                 }
+
+                // Same key grabs and throws — press E with nothing held to grab the
+                // nearest crate in range/in front; press it again while holding one to
+                // throw it. CrateController.LocalHeldCrate is this client's own
+                // (client-side only) record of what it's currently holding, kept in sync
+                // by CrateController.OnOwnershipChanged rather than tracked here, since
+                // the server — not this input handler — is what actually decides whether
+                // a grab succeeds.
+                if (keyboard.eKey.wasPressedThisFrame)
+                {
+                    if (CrateController.LocalHeldCrate != null)
+                    {
+                        var cam = Camera.main;
+                        var throwVelocity = (cam != null ? cam.transform.forward : transform.forward) * ThrowForce
+                                             + Vector3.up * ThrowUpwardBoost;
+                        RequestThrowServerRpc(throwVelocity);
+                    }
+                    else
+                    {
+                        RequestGrabServerRpc();
+                    }
+                }
             }
 
             // Resolved to a camera-relative world-space direction here (client-side, where
@@ -382,7 +421,15 @@ namespace CubeArena.Shared
             // them rather than them turning. Facing always tracks the camera's yaw (not
             // just while moving), same convention as most third-person games.
             var facingYaw = Camera.main != null ? Camera.main.transform.eulerAngles.y : transform.eulerAngles.y;
-            transform.rotation = Quaternion.Euler(0, facingYaw, 0); // instant local prediction — it's just mirroring our own camera, no reconciliation needed
+            CommitWorldInputAndFacing(worldInput, facingYaw);
+        }
+
+        // Shared by both the real-keyboard path above and RunBotBehavior below: predicts
+        // facing locally, and sends a new SubmitInputServerRpc only when the world-space
+        // input or facing actually changed.
+        private void CommitWorldInputAndFacing(Vector2 worldInput, float facingYaw)
+        {
+            transform.rotation = Quaternion.Euler(0, facingYaw, 0); // instant local prediction — it's just mirroring our own camera (or, for a bot, its own facing decision), no reconciliation needed
 
             if (worldInput != _lastSentInput || !Mathf.Approximately(facingYaw, _lastSentYaw))
             {
@@ -390,6 +437,107 @@ namespace CubeArena.Shared
                 _lastSentYaw = facingYaw;
                 SubmitInputServerRpc(worldInput, facingYaw);
             }
+        }
+
+        // Owner-client-side only, only reached when BotModeEnabled — see its declaration.
+        // Deliberately simple: it only needs to generate realistic movement + push/grab/
+        // throw network traffic for the bandwidth load test, not play well. Wanders
+        // toward the nearest un-held crate, grabs it once in range, holds briefly, throws
+        // it, repeats.
+        private CrateController _botTargetCrate;
+        private float _botStateTimer;
+        // Separate from _botStateTimer (which governs target/throw pacing): without this,
+        // RunBotBehavior would call RequestGrabServerRpc() on every single Update() while
+        // in range and unheld. Update() is uncapped in a -batchmode -nographics build (no
+        // Application.targetFrameRate set, no vsync) and can run tens of thousands of
+        // times/sec — confirmed via a real 2-bot smoke test, where the contesting bot's
+        // bandwidth ran ~10x its rival's before this fix. The real-keyboard path doesn't
+        // have this problem since it's edge-triggered on wasPressedThisFrame (one keypress
+        // = one RPC); a bot has no "key press" to edge-detect against, so it needs an
+        // explicit cooldown instead — long enough for a grab's ownership change to
+        // round-trip and flip LocalHeldCrate (which is what actually stops the retries).
+        private float _botGrabRequestCooldown;
+
+        private void RunBotBehavior()
+        {
+            _botStateTimer -= Time.deltaTime;
+            _botGrabRequestCooldown -= Time.deltaTime;
+
+            if (CrateController.LocalHeldCrate != null)
+            {
+                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                if (_botStateTimer <= 0f)
+                {
+                    var throwVelocity = transform.forward * ThrowForce + Vector3.up * ThrowUpwardBoost;
+                    RequestThrowServerRpc(throwVelocity);
+                    _botTargetCrate = null;
+                    _botStateTimer = UnityEngine.Random.Range(1.5f, 3f); // cooldown before picking a new target
+                }
+
+                return;
+            }
+
+            if (_botTargetCrate == null || _botStateTimer <= 0f)
+            {
+                _botTargetCrate = FindNearestVisibleCrate();
+                _botStateTimer = 6f; // give up and re-pick after this long regardless
+            }
+
+            if (_botTargetCrate == null)
+            {
+                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                return;
+            }
+
+            var toTarget = _botTargetCrate.transform.position - transform.position;
+            toTarget.y = 0f;
+            if (toTarget.sqrMagnitude < 0.01f)
+            {
+                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                return;
+            }
+
+            var direction = toTarget.normalized;
+            var facingYaw = Quaternion.LookRotation(direction, Vector3.up).eulerAngles.y;
+
+            if (toTarget.magnitude <= CrateController.GrabRange * 0.8f)
+            {
+                if (_botGrabRequestCooldown <= 0f)
+                {
+                    RequestGrabServerRpc();
+                    _botGrabRequestCooldown = 0.5f; // let ownership resolve before retrying
+                }
+
+                CommitWorldInputAndFacing(Vector2.zero, facingYaw);
+                return;
+            }
+
+            // World-space input directly toward the target — no camera to resolve
+            // relative to, since a bot has no camera.
+            CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
+        }
+
+        private CrateController FindNearestVisibleCrate()
+        {
+            var crates = FindObjectsByType<CrateController>(FindObjectsSortMode.None);
+            CrateController nearest = null;
+            var nearestDistSqr = float.MaxValue;
+            foreach (var crate in crates)
+            {
+                if (crate.IsHeld)
+                {
+                    continue;
+                }
+
+                var distSqr = (crate.transform.position - transform.position).sqrMagnitude;
+                if (distSqr < nearestDistSqr)
+                {
+                    nearestDistSqr = distSqr;
+                    nearest = crate;
+                }
+            }
+
+            return nearest;
         }
 
         private static Vector2 CameraRelativeXZ(Vector2 input)
@@ -511,6 +659,83 @@ namespace CubeArena.Shared
         private void SetSprintServerRpc(bool held)
         {
             _sprintHeld.Value = held;
+        }
+
+        // Default RequireOwnership=true is exactly right here (unlike e.g. MatchManager's
+        // vote RPC) — a player can only ever request a grab/throw through their own
+        // PlayerController, which they own by definition.
+        [ServerRpc]
+        private void RequestGrabServerRpc()
+        {
+            CrateController nearest = null;
+            var nearestDistSqr = CrateController.GrabRange * CrateController.GrabRange;
+            foreach (var crate in CrateController.ActiveServerCrates)
+            {
+                if (crate.IsHeld)
+                {
+                    continue;
+                }
+
+                var toCrate = crate.transform.position - transform.position;
+                var distSqr = toCrate.sqrMagnitude;
+                if (distSqr > nearestDistSqr)
+                {
+                    continue;
+                }
+
+                // Roughly in front of the player, not something behind them they'd have
+                // no way of aiming away from.
+                if (Vector3.Dot(transform.forward, toCrate.normalized) < 0.3f)
+                {
+                    continue;
+                }
+
+                nearestDistSqr = distSqr;
+                nearest = crate;
+            }
+
+            nearest?.ServerGrab(OwnerClientId);
+        }
+
+        [ServerRpc]
+        private void RequestThrowServerRpc(Vector3 releaseVelocity)
+        {
+            foreach (var crate in CrateController.ActiveServerCrates)
+            {
+                if (crate.OwnerClientId == OwnerClientId)
+                {
+                    crate.ServerRelease(releaseVelocity);
+                    break;
+                }
+            }
+        }
+
+        // CharacterController.Move() does not automatically push Rigidbodies it collides
+        // with — this is the hook Unity expects a script to implement for that. Server-only
+        // since the server's own SimulateMovement is what actually calls .Move() with
+        // authority; un-held crates are server-owned anyway, so this is the correct side to
+        // apply the push from. Held crates are excluded — pushing something someone's
+        // actively carrying would fight the hold-point following in CrateController.
+        private void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+            if (!IsServer || hit.rigidbody == null)
+            {
+                return;
+            }
+
+            if (!hit.rigidbody.TryGetComponent<CrateController>(out var crate) || crate.IsHeld)
+            {
+                return;
+            }
+
+            var pushDirection = hit.moveDirection;
+            pushDirection.y = 0f;
+            if (pushDirection.sqrMagnitude < 0.0001f)
+            {
+                return;
+            }
+
+            hit.rigidbody.AddForce(pushDirection.normalized * PushForce, ForceMode.Impulse);
         }
 
         private static float SpeedMultiplierFor(PlayerPose pose) => pose switch

@@ -14,6 +14,10 @@ namespace CubeArena.Server
         public string TicketAudience { get; private set; }
         public string TicketKeyId { get; private set; }
 
+        // Small default for normal play; set to 30 for the physics-bandwidth load test
+        // (see docs/NETCODE.md) without needing a rebuild.
+        public int CrateCount { get; private set; }
+
         public static ServerConfig FromEnvironment()
         {
             return new ServerConfig
@@ -25,7 +29,8 @@ namespace CubeArena.Server
                 Capacity = int.Parse(GetEnv("CUBEARENA_CAPACITY", "6")),
                 TicketIssuer = GetEnv("CUBEARENA_TICKET_ISSUER", "cubearena-api"),
                 TicketAudience = GetEnv("CUBEARENA_TICKET_AUDIENCE", "gameserver"),
-                TicketKeyId = GetEnv("CUBEARENA_TICKET_KEY_ID", "cubearena-ticket-key-1")
+                TicketKeyId = GetEnv("CUBEARENA_TICKET_KEY_ID", "cubearena-ticket-key-1"),
+                CrateCount = int.Parse(GetEnv("CUBEARENA_CRATE_COUNT", "8"))
             };
         }
 
