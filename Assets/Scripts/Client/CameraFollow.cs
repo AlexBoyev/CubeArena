@@ -17,17 +17,37 @@ namespace CubeArena.Client
 
         public Transform Target;
 
+        // Set by ClientBootstrap's TogglePause. Without this, the ESC pause overlay
+        // unlocks the cursor but this kept reading Mouse.current.delta anyway — so moving
+        // the mouse to click Resume/Leave Match silently spun the camera in the
+        // background, and resuming snapped the view to wherever that ended up. That's the
+        // "ESC/resume is glitchy" report.
+        public bool Paused;
+
         private float _yaw;
         private float _pitch = 20f;
+        private bool _skipNextDelta;
+
+        // Called right as the cursor re-locks on resume — re-locking snaps the OS cursor
+        // back to the window center, which on some platforms registers as a single huge
+        // synthetic delta on the very next read. Discarding just that one frame avoids a
+        // second, separate resume-glitch on top of the pause-drift one above.
+        public void NotifyResumed() => _skipNextDelta = true;
 
         private void Update()
         {
-            if (Target == null || Mouse.current == null)
+            if (Target == null || Mouse.current == null || Paused)
             {
                 return;
             }
 
             var delta = Mouse.current.delta.ReadValue();
+            if (_skipNextDelta)
+            {
+                _skipNextDelta = false;
+                return;
+            }
+
             _yaw += delta.x * MouseSensitivity;
             _pitch -= delta.y * MouseSensitivity;
             _pitch = Mathf.Clamp(_pitch, MinPitch, MaxPitch);

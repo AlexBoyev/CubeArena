@@ -62,11 +62,20 @@ dedicated game server has **two ways to run**, both documented below:
   it. It brings up Postgres + the API, builds the dedicated server if it
   hasn't been built yet, waits for the API to report healthy, prints the
   connect string, then runs the server in that same window (leave it open
-  while hosting; closing it stops the server). This replaces steps 3-7 of
-  the runbook below with one double-click. (Plain `.ps1` files don't run on
-  double-click in Windows Explorer by default — that's what the `.bat`
-  wrapper is for; `start-host.ps1` has the actual logic if you want to read
-  or adapt it.)
+  while hosting). This replaces steps 3-7 of the runbook below with one
+  double-click. (Plain `.ps1` files don't run on double-click in Windows
+  Explorer by default — that's what the `.bat` wrapper is for; `start-host.ps1`
+  has the actual logic if you want to read or adapt it.)
+- **One-click stop**: `infra/compose/Stop-CubeArena-Host.bat` — closing the
+  server window (or Ctrl+C) only stops the game server and disconnects
+  players; Postgres and the API keep running (and stay reachable on
+  whatever ports are forwarded) until something explicitly brings them
+  down. This double-click does that: stops the dedicated server if it's
+  still running, then `docker compose down`. Run it whenever you're done
+  hosting for the session — especially important if your router ports are
+  forwarded to the open internet (see "Playing with people who aren't on
+  your physical LAN" below), since that's the only way those ports actually
+  stop being reachable.
 
 ### Tier 0 runbook: bring the stack up and connect four clients
 
@@ -151,8 +160,9 @@ dedicated game server has **two ways to run**, both documented below:
     Share whichever zip however you like (USB stick, cloud storage link,
     the release link) — the recipient just unzips and runs
     `CubeArena.exe`, no Unity install needed on their end.
-11. **Shut down** when done: close the game server window (`Ctrl+C`), then
-    `docker compose down` (add `-v` only if you also want to wipe the
+11. **Shut down** when done: `infra/compose/Stop-CubeArena-Host.bat`
+    (double-click), or manually — close the game server window (`Ctrl+C`),
+    then `docker compose down` (add `-v` only if you also want to wipe the
     Postgres volume, e.g. to reset all accounts).
 
 **Verifying UDP reachability from the LAN, not just localhost**: a UDP port

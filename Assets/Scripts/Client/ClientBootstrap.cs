@@ -37,9 +37,13 @@ namespace CubeArena.Client
         private GameObject _hudPanel;
         private GameObject _matchHudPanel;
         private GameObject _pausePanel;
+        private GameObject _lobbyPanel;
         private GameObject _minimap;
         private PlayerController _localPlayer;
+        private CameraFollow _cameraFollow;
         private bool _isPaused;
+        private Text _lobbyStatusText;
+        private Button _startMatchButton;
         private Text _loginStatus;
         private Text _selectStatus;
         private Text _hudText;
@@ -106,6 +110,7 @@ namespace CubeArena.Client
             if (_hudPanel.activeSelf)
             {
                 UpdateMatchHud();
+                UpdateLobby();
 
                 // Every frame, not throttled like UpdateMatchHud — it drains/regens fast
                 // enough (see MovementConstants.SprintMana*) that a 4x/second update would
@@ -138,6 +143,18 @@ namespace CubeArena.Client
             _isPaused = !_isPaused;
             _pausePanel.SetActive(_isPaused);
             _localPlayer?.SetInputPaused(_isPaused);
+
+            if (_cameraFollow != null)
+            {
+                _cameraFollow.Paused = _isPaused;
+                if (!_isPaused)
+                {
+                    // Re-locking below snaps the OS cursor back to center, which can
+                    // register as a single huge mouse delta on the next read — discard it
+                    // so resuming doesn't also snap the view to a random angle.
+                    _cameraFollow.NotifyResumed();
+                }
+            }
 
             Cursor.lockState = _isPaused ? CursorLockMode.None : CursorLockMode.Locked;
             Cursor.visible = _isPaused;
@@ -186,6 +203,55 @@ namespace CubeArena.Client
             _scoreboardText.text = scoreboard.ToString();
         }
 
+        // Shows/hides the lobby overlay based on MatchManager.Instance.MatchStarted, and
+        // keeps the status text / Start button current for who's connected and who's
+        // host. Every frame, not throttled like UpdateMatchHud — the moment the host
+        // actually starts the match, this needs to disappear immediately, not up to
+        // 250ms late.
+        private void UpdateLobby()
+        {
+            var matchManager = MatchManager.Instance;
+            var networkManager = NetworkManager.Singleton;
+            if (matchManager == null || networkManager == null)
+            {
+                return;
+            }
+
+            if (matchManager.MatchStarted)
+            {
+                _lobbyPanel.SetActive(false);
+                return;
+            }
+
+            _lobbyPanel.SetActive(true);
+
+            var isHost = IsLobbyHost(networkManager);
+            var count = networkManager.ConnectedClientsIds.Count;
+            _lobbyStatusText.text = isHost
+                ? $"{count}/4 connected — start when everyone's ready."
+                : $"{count}/4 connected — waiting for the host to start...";
+            _startMatchButton.gameObject.SetActive(isHost);
+        }
+
+        // "Host" = whoever's been connected longest (the lowest client id) — the same
+        // rule MatchManager.RequestStartMatchServerRpc enforces server-side, so the
+        // button being visible here is never a false promise.
+        private static bool IsLobbyHost(NetworkManager networkManager)
+        {
+            var min = ulong.MaxValue;
+            foreach (var id in networkManager.ConnectedClientsIds)
+            {
+                if (id < min)
+                {
+                    min = id;
+                }
+            }
+
+            return networkManager.LocalClientId == min;
+        }
+
+        private void OnStartMatchClicked() => MatchManager.Instance?.RequestStart();
+
         // Graceful leave (section 6): shut the connection down cleanly instead of just
         // letting the process die, so the server's disconnect callback (and therefore
         // the backend's release-slot call) fires immediately rather than waiting for a
@@ -210,6 +276,7 @@ namespace CubeArena.Client
             BuildConnectingPanel();
             BuildHud();
             BuildPausePanel();
+            BuildLobbyPanel();
             ShowOnly(_mainMenuPanel);
         }
 
@@ -223,6 +290,22 @@ namespace CubeArena.Client
             UiFactory.CreateText(panelRect, "Paused", 28, new Vector2(0, 70), new Vector2(260, 40));
             UiFactory.CreateButton(panelRect, "Resume", new Vector2(0, 0), OnResumeClicked, new Vector2(220, 50));
             UiFactory.CreateButton(panelRect, "Leave Match", new Vector2(0, -65), OnLeaveClicked, new Vector2(220, 50));
+        }
+
+        // Shown on top of the HUD from the moment a player spawns until
+        // MatchManager.Instance.MatchStarted goes true (see Update's UpdateLobby) —
+        // players can already walk around and look at the arena while it's up, they just
+        // can't score yet and the 5-minute clock hasn't started. Everyone sees the same
+        // panel; only whoever's currently "host" (lowest connected client id) sees an
+        // enabled Start button instead of a "waiting" message.
+        private void BuildLobbyPanel()
+        {
+            var panelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(320, 200));
+            _lobbyPanel = panelRect.gameObject;
+            _lobbyPanel.SetActive(false);
+            UiFactory.CreateText(panelRect, "Lobby", 28, new Vector2(0, 70), new Vector2(280, 40));
+            _lobbyStatusText = UiFactory.CreateText(panelRect, "", 16, new Vector2(0, 20), new Vector2(280, 50));
+            _startMatchButton = UiFactory.CreateButton(panelRect, "Start Match", new Vector2(0, -55), OnStartMatchClicked, new Vector2(220, 50));
         }
 
         private void BuildMainMenuPanel()
@@ -557,6 +640,7 @@ namespace CubeArena.Client
             {
                 var follow = mainCamera.GetComponent<CameraFollow>() ?? mainCamera.gameObject.AddComponent<CameraFollow>();
                 follow.Target = player.transform;
+                _cameraFollow = follow;
             }
 
             _hudText.text = $"Slot {player.SlotIndex}";
@@ -593,8 +677,10 @@ namespace CubeArena.Client
             ShowOnly(_characterSelectPanel);
 
             _localPlayer = null;
+            _cameraFollow = null;
             _isPaused = false;
             _pausePanel.SetActive(false);
+            _lobbyPanel.SetActive(false);
 
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;

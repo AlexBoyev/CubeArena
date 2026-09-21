@@ -22,9 +22,17 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<float> _timeRemaining = new(
             MatchDurationSeconds, writePerm: NetworkVariableWritePermission.Server);
 
+        // A lobby gate: players connect and spawn into the arena immediately (unchanged),
+        // but the clock doesn't start until whoever's hosting explicitly starts it — so a
+        // friend still connecting, or router/port-forwarding trouble on their end, doesn't
+        // silently burn match time before everyone's actually in.
+        private readonly NetworkVariable<bool> _matchStarted = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
         private bool _hasEnded;
 
         public float TimeRemaining => _timeRemaining.Value;
+        public bool MatchStarted => _matchStarted.Value;
 
         public override void OnNetworkSpawn()
         {
@@ -33,7 +41,7 @@ namespace CubeArena.Shared
 
         private void Update()
         {
-            if (!IsServer || _hasEnded)
+            if (!IsServer || _hasEnded || !_matchStarted.Value)
             {
                 return;
             }
@@ -46,11 +54,60 @@ namespace CubeArena.Shared
             }
         }
 
+        // Client-callable: ClientBootstrap's lobby "Start Match" button calls this — only
+        // shown to the host in the first place, but RequestStartMatchServerRpc re-checks
+        // who's actually host server-side too, so a non-host client can't start the match
+        // just by calling this method directly instead of clicking the (hidden-from-them)
+        // button.
+        public void RequestStart() => RequestStartMatchServerRpc();
+
+        [ServerRpc(RequireOwnership = false)]
+        private void RequestStartMatchServerRpc(ServerRpcParams rpcParams = default)
+        {
+            if (_matchStarted.Value || NetworkManager == null)
+            {
+                return;
+            }
+
+            if (rpcParams.Receive.SenderClientId != LowestConnectedClientId())
+            {
+                return; // not the host — ignore
+            }
+
+            _matchStarted.Value = true;
+
+            // Anyone who wandered around and grabbed a pickup while waiting in the lobby
+            // shouldn't keep that as a head start once the match officially begins.
+            foreach (var player in PlayerController.ActiveServerPlayers)
+            {
+                player.ResetScore();
+            }
+        }
+
+        // "Host" = whoever's been connected longest (the lowest client id), recomputed on
+        // demand rather than cached — good enough for a private game among friends without
+        // needing any extra state if the original host happens to leave before starting.
+        private ulong LowestConnectedClientId()
+        {
+            var min = ulong.MaxValue;
+            foreach (var id in NetworkManager.ConnectedClientsIds)
+            {
+                if (id < min)
+                {
+                    min = id;
+                }
+            }
+
+            return min;
+        }
+
         // Server-only: called by ServerBootstrap after handling MatchEnded, once everyone
-        // has been disconnected, so the next round starts with a fresh clock.
+        // has been disconnected, so the next round starts with a fresh clock and goes
+        // through the lobby again rather than auto-starting.
         public void ResetForNewRound()
         {
             _timeRemaining.Value = MatchDurationSeconds;
+            _matchStarted.Value = false;
             _hasEnded = false;
         }
 
