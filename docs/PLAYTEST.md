@@ -50,3 +50,62 @@ for scale), each distinctly and correctly recoloured, both mid-walk-cycle.
   read as clearly different at a glance) — `ThiefAnimationSettings.asset`
   exposes the crossfade duration and jump timing thresholds for retuning
   without a code change if anything feels off.
+
+## Milestone 3 — The coin test (multi-carrier loot, banking, team total)
+
+**Verified automatically**: client + dedicated server both rebuild clean
+in batch mode (twice — once before, once after a real bug fix, see below);
+59/59 backend tests; two separate live bot-mode runs against a fresh
+dedicated server each time, confirmed via server-side `[Loot]`/`[Bank]`
+log traces:
+- **2 bots** ("Red"/"Blue"): both gripped the floor coin
+  (`grippers=2/2 carrying=True`), carried it toward the mousehole at the
+  tuned `CarrySpeed` rate, and it banked cleanly
+  (`[Bank] Loot_Coin(Clone) banked for 10 (grippers=2).`) — this is the
+  milestone's actual done-criterion ("2 players on LAN carry and bank the
+  coin"), confirmed with no exceptions in any client or server log.
+- **1 bot** (isolating the under-staffed case, since the 2-bot run's bots
+  gripped in near-lockstep and never produced an observable 1-gripper
+  state): confirmed `grippers=1/2 carrying=False`, moving at the tuned
+  `DragSpeed` rate — visibly slower than the 2-gripper carry rate,
+  confirming drag and carry are genuinely different speeds.
+- A real bug was found and fixed during this verification, not just
+  assumed correct from code review: the coin's auto-added
+  `CapsuleCollider` (from `GameObject.CreatePrimitive(Cylinder)`)
+  mishandled its extreme non-uniform squash scale, resting at y≈0.39
+  instead of the intended ~0.075 — fixed with an explicit `BoxCollider`,
+  re-verified live afterward (rests at y≈0.08, as expected).
+- A second real bug was caught before it could ship: the client's own
+  `AddNetworkPrefab` registration list (`ClientBootstrap.ConnectToGameServer`)
+  still referenced the retired `CrateController.CreateTemplate()` instead
+  of the new `LootItem.CreateTemplate()` — left unfixed, this would have
+  silently broken every client connection (NGO requires matching prefab
+  hash lists between client and server) despite the server-side code
+  looking correct in isolation.
+
+**Not verified this session — environmental blocker, not a code issue**:
+Visual/screenshot verification of the 2-bot carry was not possible this
+session — the host desktop was remotely locked partway through
+verification, which forces Unity's windowed client onto a null/non-
+rendering graphics device (`Forcing GfxDevice: Null`) regardless of
+`-nographics`, so any screenshot captured under that state is blank/black,
+not real visual confirmation. The server log traces above confirm the
+mechanic works correctly end-to-end (grippers=2/2 -> carrying=True ->
+banked), but a human should visually confirm the coin-carry actually
+*looks and feels* right (does it read clearly as "being carried," is the
+carry height/speed pleasant to watch, does the gold coin read well against
+the greybox floor) once at an unlocked desktop — this is exactly the kind
+of check AUTONOMOUS_RUN.md's own "carrying feels good" done-criterion
+implies but that a server log alone can't confirm.
+
+**Needs your eyes**:
+- The visual carry feel noted above — first priority once you're back at
+  the machine.
+- The old per-player scoreboard (Hold-Tab) still works but no longer
+  reflects any active gameplay (nothing awards per-player score any
+  more) — worth a glance to confirm it doesn't look broken/confusing
+  sitting next to the new team-total readout, even though it's flagged
+  for eventual removal (see docs/DECISIONS.md).
+- `LootSettings.asset` exposes `GripRange`/`DragSpeed`/`CarrySpeed`/
+  `CarryHeight`/`BankRadius` for retuning without a code change if the
+  carry feel needs adjusting.

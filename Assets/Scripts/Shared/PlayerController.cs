@@ -44,9 +44,6 @@ namespace CubeArena.Shared
         private const float CrouchControllerHeight = 1.1f;
         private const float CrawlControllerHeight = 0.6f; // prone-low, for the crawl tunnels specifically — crouch height doesn't fit under them
         private const float WalkDetectSpeed = 0.15f; // horizontal m/s above which AnimateVisuals treats the player as walking
-        private const float ThrowForce = 9f; // meters/second, along camera-forward
-        private const float ThrowUpwardBoost = 2.5f; // meters/second, added so throws arc instead of skimming the ground
-        private const float PushForce = 3f; // impulse applied to an un-held CrateController's Rigidbody on CharacterController contact
 
         private readonly NetworkVariable<Vector3> _serverPosition = new(
             writePerm: NetworkVariableWritePermission.Server);
@@ -74,6 +71,15 @@ namespace CubeArena.Shared
         // Server-authoritative: whether this tick's movement used climb mode instead of
         // normal grounded movement. See the "Climbing" section below.
         private readonly NetworkVariable<bool> _isClimbing = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
+        // Server-authoritative: whether this player currently has a grip on a LootItem —
+        // read client-side purely so the owner's own E-key handler knows whether to send
+        // a grip or release request (see RequestToggleGripServerRpc). The actual
+        // authoritative record of who's gripping what lives on LootItem itself
+        // (_grippedLootItemServer below, server-only); this bool is just the client-
+        // visible mirror of that.
+        private readonly NetworkVariable<bool> _isGrippingLoot = new(
             writePerm: NetworkVariableWritePermission.Server);
 
         // Server-authoritative sprint resource — only SimulateMovement (server) ever
@@ -130,6 +136,16 @@ namespace CubeArena.Shared
 
         // Same loading convention as _climbSettings - see its comment.
         private static ThiefAnimationSettings _thiefAnimSettings;
+
+        // Same loading convention as _climbSettings - see its comment.
+        private static LootSettings _lootSettings;
+
+        // Server-only: the LootItem this player currently has a grip on, or null. The
+        // authoritative record (LootItem itself only ever learns about grips through
+        // ServerAddGripper/ServerRemoveGripper) — this is just this player's own side of
+        // that relationship, kept so RequestToggleGripServerRpc and disconnect cleanup
+        // (OnNetworkDespawn) don't need to scan LootItem.ActiveServerLootItems to find it.
+        private LootItem _grippedLootItemServer;
 
         private CharacterController _characterController;
         private Renderer[] _renderers;
@@ -189,6 +205,11 @@ namespace CubeArena.Shared
                 _thiefAnimSettings = Resources.Load<ThiefAnimationSettings>("ThiefAnimationSettings");
             }
 
+            if (_lootSettings == null)
+            {
+                _lootSettings = Resources.Load<LootSettings>("LootSettings");
+            }
+
             _characterController = GetComponent<CharacterController>();
             _renderers = GetComponentsInChildren<Renderer>();
 
@@ -233,8 +254,28 @@ namespace CubeArena.Shared
         {
             if (IsServer)
             {
+                // A carrier disconnecting mid-carry drops their grip cleanly (master
+                // prompt section 7) — LootItem.FixedUpdate just recomputes its average
+                // over whoever's left next tick, no special-casing needed there.
+                if (_grippedLootItemServer != null)
+                {
+                    _grippedLootItemServer.ServerRemoveGripper(OwnerClientId);
+                    _grippedLootItemServer = null;
+                }
+
                 ActiveServerPlayers.Remove(this);
             }
+        }
+
+        // Server-only: called by LootItem when this player's grip ends for a reason
+        // LootItem itself initiated (banking, or defensive despawn cleanup) rather than
+        // this player releasing it themselves — keeps _grippedLootItemServer/
+        // _isGrippingLoot in sync either way, so a player whose item just got banked
+        // sees their own next E-press try a fresh grip rather than a stale release.
+        public void ServerClearGrip()
+        {
+            _grippedLootItemServer = null;
+            _isGrippingLoot.Value = false;
         }
 
         // Server-only: called by PickupController when this player collects one.
@@ -406,26 +447,15 @@ namespace CubeArena.Shared
                     SetSprintServerRpc(sprintHeld);
                 }
 
-                // Same key grabs and throws — press E with nothing held to grab the
-                // nearest crate in range/in front; press it again while holding one to
-                // throw it. CrateController.LocalHeldCrate is this client's own
-                // (client-side only) record of what it's currently holding, kept in sync
-                // by CrateController.OnOwnershipChanged rather than tracked here, since
-                // the server — not this input handler — is what actually decides whether
-                // a grab succeeds.
+                // Same key grips and releases — the server (not this input handler)
+                // decides whether a grip request succeeds and toggles based on whether
+                // this player already has one, via _isGrippingLoot's replicated value
+                // (see RequestToggleGripServerRpc). No throw/velocity computation needed
+                // any more — loot is only ever carried, never thrown (unlike the old
+                // CrateController crates).
                 if (keyboard.eKey.wasPressedThisFrame)
                 {
-                    if (CrateController.LocalHeldCrate != null)
-                    {
-                        var cam = Camera.main;
-                        var throwVelocity = (cam != null ? cam.transform.forward : transform.forward) * ThrowForce
-                                             + Vector3.up * ThrowUpwardBoost;
-                        RequestThrowServerRpc(throwVelocity);
-                    }
-                    else
-                    {
-                        RequestGrabServerRpc();
-                    }
+                    RequestToggleGripServerRpc();
                 }
             }
 
@@ -463,63 +493,67 @@ namespace CubeArena.Shared
         }
 
         // Owner-client-side only, only reached when BotModeEnabled — see its declaration.
-        // Deliberately simple: it only needs to generate realistic movement + push/grab/
-        // throw network traffic for the bandwidth load test, not play well. Wanders
-        // toward the nearest un-held crate, grabs it once in range, holds briefly, throws
-        // it, repeats.
-        private CrateController _botTargetCrate;
+        // Milestone 3's verification vehicle for "the coin test": walk to the nearest
+        // ungripped loot item, grip it, then walk toward the mousehole while still
+        // gripping (the item itself follows the average gripper position — see
+        // LootItem.FixedUpdate — so simply moving the bot's own body toward the
+        // mousehole while gripped is enough to drag/carry the item along; no separate
+        // "carry" bot state needed). Once the item banks, LootItem.ServerClearGrip
+        // resets _isGrippingLoot to false server-side, which this reads next tick to go
+        // pick a new target — in practice, for M3's single coin, that just means
+        // standing near the mousehole with nothing left to do.
+        private LootItem _botTargetLoot;
         private float _botStateTimer;
-        // Separate from _botStateTimer (which governs target/throw pacing): without this,
-        // RunBotBehavior would call RequestGrabServerRpc() on every single Update() while
-        // in range and unheld. Update() is uncapped in a -batchmode -nographics build (no
-        // Application.targetFrameRate set, no vsync) and can run tens of thousands of
-        // times/sec — confirmed via a real 2-bot smoke test, where the contesting bot's
-        // bandwidth ran ~10x its rival's before this fix. The real-keyboard path doesn't
-        // have this problem since it's edge-triggered on wasPressedThisFrame (one keypress
-        // = one RPC); a bot has no "key press" to edge-detect against, so it needs an
-        // explicit cooldown instead — long enough for a grab's ownership change to
-        // round-trip and flip LocalHeldCrate (which is what actually stops the retries).
-        private float _botGrabRequestCooldown;
+        // Separate from _botStateTimer: without this, RunBotBehavior would call
+        // RequestToggleGripServerRpc() on every single Update() while in range and not
+        // yet gripping — Update() is uncapped in a -batchmode -nographics build and can
+        // run tens of thousands of times/sec (see the original crate-bot version of this
+        // same problem, docs/NETCODE.md). A toggle RPC spammed that fast would just
+        // grip-then-immediately-release-then-immediately-grip every call, never settling
+        // — this cooldown gives one request time to actually land and _isGrippingLoot to
+        // replicate back before trying again.
+        private float _botGripRequestCooldown;
 
         private void RunBotBehavior()
         {
             _botStateTimer -= Time.deltaTime;
-            _botGrabRequestCooldown -= Time.deltaTime;
+            _botGripRequestCooldown -= Time.deltaTime;
 
-            if (CrateController.LocalHeldCrate != null)
+            if (_isGrippingLoot.Value)
             {
-                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
-                if (_botStateTimer <= 0f)
+                // Already gripping something — walk it toward the mousehole. The item
+                // follows the average of its grippers' positions on its own (server-
+                // side), so this bot just needs to keep moving there like any other
+                // destination.
+                var toMousehole = KitchenBuilder.MouseholePosition - transform.position;
+                toMousehole.y = 0f;
+                if (toMousehole.sqrMagnitude < 0.01f)
                 {
-                    var throwVelocity = transform.forward * ThrowForce + Vector3.up * ThrowUpwardBoost;
-                    RequestThrowServerRpc(throwVelocity);
-                    _botTargetCrate = null;
-                    _botStateTimer = UnityEngine.Random.Range(1.5f, 3f); // cooldown before picking a new target
+                    CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                    return;
                 }
 
+                var mouseholeDir = toMousehole.normalized;
+                var mouseholeYaw = Quaternion.LookRotation(mouseholeDir, Vector3.up).eulerAngles.y;
+                CommitWorldInputAndFacing(new Vector2(mouseholeDir.x, mouseholeDir.z), mouseholeYaw);
                 return;
             }
 
-            if (_botTargetCrate == null || _botStateTimer <= 0f)
+            if (_botTargetLoot == null || !_botTargetLoot.IsSpawned || _botStateTimer <= 0f)
             {
-                _botTargetCrate = FindNearestVisibleCrate();
-                _botStateTimer = 6f; // give up and re-pick after this long regardless
+                _botTargetLoot = FindNearestVisibleLootItem();
+                _botStateTimer = 10f; // give up and re-pick after this long regardless
             }
 
-            // No crates exist while Milestone 3's loot redesign is pending (see
-            // ServerBootstrap - SpawnCrates is disabled), so bots fall back to a fixed
-            // climb-route test target instead of idling: this is the actual Milestone 2
-            // verification mechanism (walk from the mousehole, through the chair's
-            // climbable leg, onto the seat, up the seat-to-table climb, onto the table
-            // top), driven entirely by this same crate-seeking movement code with a
-            // different destination - not bespoke climb-specific bot logic.
-            if (_botTargetCrate == null)
+            if (_botTargetLoot == null)
             {
-                RunClimbTestBotBehavior();
+                // Nothing left to do (e.g. the one coin's already banked) — stand still
+                // rather than wandering.
+                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
                 return;
             }
 
-            var toTarget = _botTargetCrate.transform.position - transform.position;
+            var toTarget = _botTargetLoot.transform.position - transform.position;
             toTarget.y = 0f;
             if (toTarget.sqrMagnitude < 0.01f)
             {
@@ -530,12 +564,13 @@ namespace CubeArena.Shared
             var direction = toTarget.normalized;
             var facingYaw = Quaternion.LookRotation(direction, Vector3.up).eulerAngles.y;
 
-            if (toTarget.magnitude <= CrateController.GrabRange * 0.8f)
+            var gripRange = _lootSettings != null ? _lootSettings.GripRange : 2.5f;
+            if (toTarget.magnitude <= gripRange * 0.8f)
             {
-                if (_botGrabRequestCooldown <= 0f)
+                if (_botGripRequestCooldown <= 0f)
                 {
-                    RequestGrabServerRpc();
-                    _botGrabRequestCooldown = 0.5f; // let ownership resolve before retrying
+                    RequestToggleGripServerRpc();
+                    _botGripRequestCooldown = 0.5f; // let the grip resolve before retrying
                 }
 
                 CommitWorldInputAndFacing(Vector2.zero, facingYaw);
@@ -547,91 +582,34 @@ namespace CubeArena.Shared
             CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
         }
 
-        private CrateController FindNearestVisibleCrate()
+        private LootItem FindNearestVisibleLootItem()
         {
-            var crates = FindObjectsByType<CrateController>(FindObjectsSortMode.None);
-            CrateController nearest = null;
+            var items = FindObjectsByType<LootItem>(FindObjectsSortMode.None);
+            LootItem nearest = null;
             var nearestDistSqr = float.MaxValue;
-            foreach (var crate in crates)
+            foreach (var item in items)
             {
-                // Every client keeps one never-spawned CrateController template parked
-                // at (0,-1000,0) purely so NGO has something to register as a network
-                // prefab (see CrateController.CreateTemplate, same convention as
-                // PlayerController's own template) - kept *active* in the scene (NGO
-                // requires that), which means a plain FindObjectsByType scan picks it
-                // up like a real crate. IsHeld doesn't filter it out either: a
-                // never-spawned NetworkObject's OwnerClientId defaults to 0, which is
-                // also NetworkManager.ServerClientId, so it reads as "not held".
-                // First Milestone 2 climb-route bot test walked every bot straight to
-                // this template's (0, z=0) horizontal position instead of the actual
-                // climb-test waypoints - IsSpawned is what actually distinguishes a
-                // real, network-spawned crate from this template.
-                if (!crate.IsSpawned || crate.IsHeld)
+                // Every client keeps one never-spawned LootItem template parked at
+                // (0,-1000,0) purely so NGO has something to register as a network
+                // prefab — see LootItem.CreateTemplate, same convention as
+                // PlayerController's own template, and the exact IsSpawned pitfall
+                // documented in docs/DECISIONS.md ("FindNearestVisibleCrate must check
+                // IsSpawned") that this class fixes from the start rather than
+                // rediscovering.
+                if (!item.IsSpawned)
                 {
                     continue;
                 }
 
-                var distSqr = (crate.transform.position - transform.position).sqrMagnitude;
+                var distSqr = (item.transform.position - transform.position).sqrMagnitude;
                 if (distSqr < nearestDistSqr)
                 {
                     nearestDistSqr = distSqr;
-                    nearest = crate;
+                    nearest = item;
                 }
             }
 
             return nearest;
-        }
-
-        // Two ground-level waypoints, same Z as the chair so a direct path actually
-        // passes through it (a path straight from the mousehole to the table's own
-        // center does not — the diagonal only reaches the chair's Z right at the very
-        // end, well past the chair's X). Switches to the table once within a few
-        // meters of the chair rather than exactly on top of it, so forward input never
-        // drops to zero while still inside the leg's climbable zone. Climbing itself
-        // needs no special-case bot code at all: ComputeClimbMove only ever consumes
-        // the up/right components of world input while _isClimbing (see
-        // SimulateMovement), never resolving horizontal distance-to-target, so the
-        // exact same "walk toward target, don't stop until arrived" logic that
-        // chases crates keeps pressing forward into the climbable surface for the
-        // whole climb.
-        // Computed on demand, not as static readonly fields initialized from
-        // KitchenBuilder's own static fields: a first attempt at this had both bots
-        // walking straight for world-origin (0,0,0) instead of the chair, traced back
-        // to C#'s "beforefieldinit" semantics - a type with no explicit static
-        // constructor (both KitchenBuilder and PlayerController qualify) gives the
-        // runtime latitude to run its static field initializers any time before first
-        // use, not strictly "before the first class that references it", so
-        // PlayerController's own static fields ended up reading KitchenBuilder.
-        // TableCenter as its default Vector3.zero instead of (10,0,15). Local
-        // properties evaluated at call time (well after KitchenBuilder.Build() has
-        // long since run) sidestep the whole cross-class static-init-order question.
-        private static Vector3 ClimbTestWaypointChair =>
-            new(KitchenBuilder.TableCenter.x - KitchenBuilder.TableWidth / 2f - 1.5f, 0f, KitchenBuilder.TableCenter.z);
-        private static Vector3 ClimbTestWaypointTable => KitchenBuilder.TableCenter;
-        private const float WaypointSwitchDistance = 3f;
-        private bool _climbTestReachedChair;
-
-        private void RunClimbTestBotBehavior()
-        {
-            var target = _climbTestReachedChair ? ClimbTestWaypointTable : ClimbTestWaypointChair;
-            var toTarget = target - transform.position;
-            toTarget.y = 0f;
-
-            if (!_climbTestReachedChair && toTarget.magnitude <= WaypointSwitchDistance)
-            {
-                _climbTestReachedChair = true;
-                return; // re-evaluate next frame against the new (table) target
-            }
-
-            if (toTarget.sqrMagnitude < 0.01f)
-            {
-                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
-                return;
-            }
-
-            var direction = toTarget.normalized;
-            var facingYaw = Quaternion.LookRotation(direction, Vector3.up).eulerAngles.y;
-            CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
         }
 
         private static Vector2 CameraRelativeXZ(Vector2 input)
@@ -769,80 +747,53 @@ namespace CubeArena.Shared
         }
 
         // Default RequireOwnership=true is exactly right here (unlike e.g. MatchManager's
-        // vote RPC) — a player can only ever request a grab/throw through their own
-        // PlayerController, which they own by definition.
+        // vote RPC) — a player can only ever request a grip through their own
+        // PlayerController, which they own by definition. Single toggle RPC (unlike the
+        // old CrateController's separate grab/throw pair) since loot has no throw —
+        // press E to grip the nearest ungripped item in range, press it again to release
+        // whatever this player is currently gripping.
         [ServerRpc]
-        private void RequestGrabServerRpc()
+        private void RequestToggleGripServerRpc()
         {
-            CrateController nearest = null;
-            var nearestDistSqr = CrateController.GrabRange * CrateController.GrabRange;
-            foreach (var crate in CrateController.ActiveServerCrates)
+            if (_grippedLootItemServer != null)
             {
-                if (crate.IsHeld)
-                {
-                    continue;
-                }
+                _grippedLootItemServer.ServerRemoveGripper(OwnerClientId);
+                _grippedLootItemServer = null;
+                _isGrippingLoot.Value = false;
+                return;
+            }
 
-                var toCrate = crate.transform.position - transform.position;
-                var distSqr = toCrate.sqrMagnitude;
+            LootItem nearest = null;
+            var gripRange = _lootSettings != null ? _lootSettings.GripRange : 2.5f;
+            var nearestDistSqr = gripRange * gripRange;
+            foreach (var item in LootItem.ActiveServerLootItems)
+            {
+                var toItem = item.transform.position - transform.position;
+                var distSqr = toItem.sqrMagnitude;
                 if (distSqr > nearestDistSqr)
                 {
                     continue;
                 }
 
                 // Roughly in front of the player, not something behind them they'd have
-                // no way of aiming away from.
-                if (Vector3.Dot(transform.forward, toCrate.normalized) < 0.3f)
+                // no way of aiming away from. Same gate CrateController's grab used.
+                if (Vector3.Dot(transform.forward, toItem.normalized) < 0.3f)
                 {
                     continue;
                 }
 
                 nearestDistSqr = distSqr;
-                nearest = crate;
+                nearest = item;
             }
 
-            nearest?.ServerGrab(OwnerClientId);
-        }
-
-        [ServerRpc]
-        private void RequestThrowServerRpc(Vector3 releaseVelocity)
-        {
-            foreach (var crate in CrateController.ActiveServerCrates)
-            {
-                if (crate.OwnerClientId == OwnerClientId)
-                {
-                    crate.ServerRelease(releaseVelocity);
-                    break;
-                }
-            }
-        }
-
-        // CharacterController.Move() does not automatically push Rigidbodies it collides
-        // with — this is the hook Unity expects a script to implement for that. Server-only
-        // since the server's own SimulateMovement is what actually calls .Move() with
-        // authority; un-held crates are server-owned anyway, so this is the correct side to
-        // apply the push from. Held crates are excluded — pushing something someone's
-        // actively carrying would fight the hold-point following in CrateController.
-        private void OnControllerColliderHit(ControllerColliderHit hit)
-        {
-            if (!IsServer || hit.rigidbody == null)
+            if (nearest == null)
             {
                 return;
             }
 
-            if (!hit.rigidbody.TryGetComponent<CrateController>(out var crate) || crate.IsHeld)
-            {
-                return;
-            }
-
-            var pushDirection = hit.moveDirection;
-            pushDirection.y = 0f;
-            if (pushDirection.sqrMagnitude < 0.0001f)
-            {
-                return;
-            }
-
-            hit.rigidbody.AddForce(pushDirection.normalized * PushForce, ForceMode.Impulse);
+            nearest.ServerAddGripper(OwnerClientId, this);
+            _grippedLootItemServer = nearest;
+            _isGrippingLoot.Value = true;
         }
 
         private static float SpeedMultiplierFor(PlayerPose pose) => pose switch

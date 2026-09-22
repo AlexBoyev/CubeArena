@@ -33,8 +33,7 @@ namespace CubeArena.Server
         private FleetClient _fleet;
         private NetworkManager _networkManager;
         private GameObject _pickupTemplate;
-        private GameObject _crateTemplate;
-        private int _crateCount;
+        private GameObject _lootItemTemplate;
         private MatchManager _matchManager;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -70,9 +69,8 @@ namespace CubeArena.Server
 
             var playerTemplate = PlayerController.CreateTemplate();
             _pickupTemplate = PickupController.CreateTemplate();
-            _crateTemplate = CrateController.CreateTemplate();
+            _lootItemTemplate = LootItem.CreateTemplate();
             var matchManagerTemplate = MatchManager.CreateTemplate();
-            _crateCount = config.CrateCount;
 
             var networkManager = GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
             _networkManager = networkManager;
@@ -101,7 +99,7 @@ namespace CubeArena.Server
             networkManager.NetworkConfig.EnableSceneManagement = false;
             networkManager.AddNetworkPrefab(playerTemplate);
             networkManager.AddNetworkPrefab(_pickupTemplate);
-            networkManager.AddNetworkPrefab(_crateTemplate);
+            networkManager.AddNetworkPrefab(_lootItemTemplate);
             networkManager.AddNetworkPrefab(matchManagerTemplate);
 
             transport.SetConnectionData(config.AdvertiseHost, config.ListenPort, listenAddress: "0.0.0.0");
@@ -180,17 +178,19 @@ namespace CubeArena.Server
             _matchManager.MatchEnded += () => EndMatch(BuildMatchEndReason());
             _matchManager.VoteEndTriggered += () => EndMatch(BuildVoteEndReason());
 
-            // Gold pickups and crates are Cube Arena gameplay this run is replacing
-            // (docs/GAME_DESIGN.md section 11) - not spawned in the kitchen. Left
-            // callable (not deleted) rather than ripped out: PickupController/
-            // CrateController's underlying tech (network prefab template pattern,
-            // CrateController's NetworkTransform/NetworkRigidbody physics) is exactly
-            // what Milestone 3's loot redesign needs to adapt, per docs/DECISIONS.md's
-            // multi-carrier-loot entry. Full removal of the dead pickup-scoring
-            // gameplay itself (not just disabling its spawn) is deferred to that pass,
-            // where the replacement (bankable loot) actually exists.
+            // Gold pickups are Cube Arena gameplay this run is replacing (docs/
+            // GAME_DESIGN.md section 11) - not spawned in the kitchen. Left callable
+            // (not deleted) rather than ripped out: PickupController's underlying tech
+            // (network prefab template pattern) is generic enough it isn't worth
+            // duplicating, and full removal of the dead pickup-scoring gameplay itself is
+            // deferred to whenever Cube Arena's remaining dead code gets swept, per
+            // docs/DECISIONS.md.
             // SpawnPickups();
-            // SpawnCrates();
+
+            // Milestone 3's "the coin test" (POCKET_HEIST_MASTER_PROMPT.md section 12):
+            // exactly one loot item, the floor coin (2 carriers, value 10, per section
+            // 6's loot table). The other three items are Milestone 4's job.
+            SpawnFloorCoin();
         }
 
         private void OnApplicationQuit()
@@ -199,17 +199,18 @@ namespace CubeArena.Server
         }
 
         // Same shape as SpawnPickups — one shared template/hash, Instantiate +
-        // ServerInitialize + Spawn in a loop. _crateCount defaults to a gameplay-sane
-        // number but is set to 30 for the physics-bandwidth load test (see
-        // docs/NETCODE.md) via CUBEARENA_CRATE_COUNT, no rebuild needed.
-        private void SpawnCrates()
+        // ServerInitialize + Spawn. Just the one coin this milestone (see
+        // docs/PROGRESS.md's Milestone 3 scope note); Milestone 4 adds the other three
+        // items the same way, each its own requiredCarriers/value.
+        private const int FloorCoinRequiredCarriers = 2;
+        private const int FloorCoinValue = 10;
+
+        private void SpawnFloorCoin()
         {
-            for (var i = 0; i < _crateCount; i++)
-            {
-                var instance = UnityEngine.Object.Instantiate(_crateTemplate);
-                instance.GetComponent<CrateController>().ServerInitialize(PickupController.GetRandomPosition());
-                instance.GetComponent<NetworkObject>().Spawn();
-            }
+            var instance = UnityEngine.Object.Instantiate(_lootItemTemplate);
+            instance.GetComponent<LootItem>().ServerInitialize(
+                KitchenBuilder.LootCoinSpawnPosition, FloorCoinRequiredCarriers, FloorCoinValue);
+            instance.GetComponent<NetworkObject>().Spawn();
         }
 
         private void SpawnPickups()

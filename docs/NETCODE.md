@@ -118,21 +118,38 @@ Every crate (`CrateController.CreateTemplate`) carries:
   already moving under server-authoritative physics instead of restarting
   from zero velocity.
 
-### Known limitation: single-owner authority can't support multi-carrier loot
+### Resolved (Milestone 3): multi-carrier loot via permanent server authority
 
 `NetworkObject.ChangeOwnership()` gives an object exactly one owner at a
-time, which is what "authority moves to whoever's holding it" depends on
-above. Pocket Heist's loot-carry mechanic needs the opposite: 2-5 players
-gripping the *same* object simultaneously, server-averaging their combined
-input intent while carrying (see `POCKET_HEIST_MASTER_PROMPT.md` sections 7
-and 13) — there's no single "owner" to hand authority to. This
-`CrateController` pattern is left as-is for now (it's still correct for a
-single-grabber prop); a loot-carry object will need a genuinely different
-authority model — most likely staying server-owned/server-authoritative
-permanently, with the server itself reading and averaging each gripping
-client's input via ServerRpc rather than transferring ownership at all. That
-redesign belongs in the Milestone 3 plan (`docs/ROADMAP.md`/the master
-prompt), not here.
+time, which is what `CrateController`'s "authority moves to whoever's
+holding it" pattern above depends on. Pocket Heist's loot-carry mechanic
+needs the opposite: 2-5 players gripping the *same* object simultaneously
+(see `POCKET_HEIST_MASTER_PROMPT.md` sections 7 and 13) — there's no single
+"owner" to hand authority to.
+
+`LootItem` (`Assets/Scripts/Shared/LootItem.cs`) is the resolution:
+permanently server-owned, never transferring ownership at all.
+`NetworkTransform`/`NetworkRigidbody` stay on the object (unlike a hand-
+rolled `NetworkVariable<Vector3>` position — rigidbody sync is still harder
+to hand-roll well than a kinematic pose, same reasoning as `CrateController`
+originally), just left at their default `AuthorityModes.Server` instead of
+`CrateController`'s deliberate `.Owner` override. Grip membership is a
+plain server-side `Dictionary<ulong, PlayerController>`; `FixedUpdate`
+(server-only) moves the item toward the average position of its current
+grippers at `DragSpeed` (below `requiredCarriers`, item stays grounded) or
+`CarrySpeed` (at/above `requiredCarriers`, item lifts to `CarryHeight`) —
+this stands in for "the server averages grippers' input intent" from the
+brief, and naturally handles a carrier under-staffing or disconnecting
+(`ServerRemoveGripper` just shrinks the set; the average and therefore the
+drag/carry state recompute next tick, no special-casing needed). `CrateController`
+itself is left in the tree, unreferenced — see docs/DECISIONS.md.
+
+Verified live: two bots gripped a spawned coin (`grippers=2/2 carrying=True`
+in the server log), carried it to the mousehole, and it banked
+(`[Bank] ... banked for 10`); a solo-bot run separately confirmed the
+under-staffed case (`grippers=1/2 carrying=False`, moving at the tuned
+`DragSpeed` rate, not `CarrySpeed`). Full trace in docs/PROGRESS.md's
+Milestone 3 section.
 
 ### Confirmed gotcha: ownership transfer teleports
 
@@ -144,27 +161,39 @@ grab or throw is a visible snap, not a smooth hand-off — acceptable for this
 prototype's arena scale (crates are close to the player when grabbed, so the
 snap is small), but worth knowing if a future pass wants a seamless carry.
 
-### Push / grab / throw flow
+### Push / grab / throw flow (historical — CrateController, Milestone F)
+
+This described `CrateController`'s single-holder push/grab/throw flow,
+still accurate for that class (left in the tree, unreferenced — see
+docs/DECISIONS.md), but no longer reachable from `PlayerController`, which
+now drives `LootItem`'s grip/release flow instead (see the "Resolved
+(Milestone 3)" entry above and docs/DECISIONS.md's grip-flow entry). Kept
+here for historical reference to the crate/bandwidth test it was built for.
 
 - **Push**: `PlayerController.OnControllerColliderHit` (server-only —
   `CharacterController.Move()` doesn't push `Rigidbody`s on its own, so this
-  Unity message is the manual hook for it) detects a collision with a
-  `CrateController` that isn't currently held, and applies an impulse along
-  the character's move direction.
-- **Grab**: pressing E with no crate held calls
-  `PlayerController.RequestGrabServerRpc()`, which finds the nearest un-held
+  Unity message is the manual hook for it) detected a collision with a
+  `CrateController` that wasn't currently held, and applied an impulse along
+  the character's move direction. Removed from `PlayerController` in
+  Milestone 3 — loot is never pushed, only gripped.
+- **Grab**: pressing E with no crate held called
+  `PlayerController.RequestGrabServerRpc()`, which found the nearest un-held
   crate within `CrateController.GrabRange` roughly in front of the player and
-  calls `ServerGrab`.
-- **Throw**: pressing E while holding a crate computes a release velocity
-  from camera-forward plus an upward boost and calls
-  `PlayerController.RequestThrowServerRpc(velocity)`, which calls
-  `ServerRelease` on the held crate.
+  called `ServerGrab`. Replaced by `RequestToggleGripServerRpc()`/
+  `LootItem.ServerAddGripper`, which supports any number of simultaneous
+  grippers instead of exactly one.
+- **Throw**: pressing E while holding a crate computed a release velocity
+  from camera-forward plus an upward boost and called
+  `PlayerController.RequestThrowServerRpc(velocity)`, which called
+  `ServerRelease` on the held crate. No equivalent for loot — it's only ever
+  carried, never thrown.
 
-Both RPCs default to `RequireOwnership = true` (NGO's default for
+Both RPCs defaulted to `RequireOwnership = true` (NGO's default for
 `[ServerRpc]`), which is correct here since each player can only ever call
 these through their own owned `PlayerController` — no `RequireOwnership =
 false` override needed, unlike e.g. `MatchManager`'s vote RPC, which is
-called on a `NetworkObject` the caller doesn't own.
+called on a `NetworkObject` the caller doesn't own. `RequestToggleGripServerRpc`
+keeps the same default for the same reason.
 
 ## Bandwidth: 6 bots, 30 crates
 

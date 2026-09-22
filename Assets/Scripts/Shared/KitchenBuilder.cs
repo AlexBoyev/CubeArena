@@ -38,6 +38,14 @@ namespace CubeArena.Shared
         // corner-per-slot convention.
         public static readonly Vector3 MouseholePosition = new(-FloorWidth / 2f + 2f, 0f, -FloorDepth / 2f + 10f);
 
+        // Milestone 3's "the coin test": the floor coin's spawn spot, per section 6's
+        // loot table ("Floor under table"). Offset from TableCenter rather than placed
+        // exactly on it — the table leg (BuildTable) is a 2x2 footprint centered on
+        // TableCenter's own x/z, so a coin spawned there would sit inside it. Still
+        // within the table's 30x20 footprint (clear of the giant's placeholder seat,
+        // which faces south from the table's far side), just off to one corner.
+        public static readonly Vector3 LootCoinSpawnPosition = TableCenter + new Vector3(5f, 0f, -5f);
+
         public static GameObject Build()
         {
             var root = new GameObject("Kitchen");

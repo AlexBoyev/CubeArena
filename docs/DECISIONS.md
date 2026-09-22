@@ -6,6 +6,101 @@ chosen, why. Newest first.
 
 ---
 
+## LootItem moves toward average gripper *position*, not integrated input
+
+**Options**: (a) each tick, move the item toward the average of its current
+grippers' `transform.position` (what `CrateController.FixedUpdate`'s single-
+holder hold-point-following already did, generalized to N positions instead
+of one); (b) have each gripper send their own movement-intent vector (reuse
+`PlayerController`'s own world-space input, already computed every tick for
+their own movement) and have the server average *those vectors* and
+integrate the item's position from that average, closer to the brief's
+literal "the server averages grippers' input intent" wording.
+
+**Chosen**: (a). Operationally the two produce very similar results for
+this milestone's single coin (the item visibly follows wherever its
+grippers are standing, which is what "being carried by the group" should
+look like), but (a) is meaningfully simpler and more robust: it needs no
+new accessor into each `PlayerController`'s current input, has no edge
+case for "0 grippers" beyond "nothing to average" (handled the same way as
+"settle to the floor"), and its correctness doesn't depend on grippers
+actually facing/walking toward a shared destination coherently. A future
+milestone could revisit (b) if "average gripper position" starts to feel
+wrong in practice (e.g. grippers standing still but the item still
+drifting toward some group centroid that isn't where anyone's walking) —
+no evidence of that in this milestone's live testing.
+
+---
+
+## `LootItem`/`PlayerController` grip flow: single toggle RPC, no throw
+
+**Options**: (a) mirror `CrateController`'s separate grab/throw pair
+(compute a release velocity, `RequestThrowServerRpc`); (b) a single
+`RequestToggleGripServerRpc()` — grip if not gripping anything, release
+whatever's currently gripped if already gripping.
+
+**Chosen**: (b). The brief's carry mechanic (section 7) never mentions
+throwing loot — items are shoved off the table, lowered down the
+tablecloth, or carried down the chair, never thrown — so a throw affordance
+for loot would be dead UX at best, actively wrong at worst (a "yeeted"
+coin isn't in scope). Dropping the velocity computation and the second RPC
+also simplified `PlayerController`'s E-key handler down to one line
+(`RequestToggleGripServerRpc()`), no client-side branching needed at all
+(the server, not the input handler, decides grip vs. release based on
+`_grippedLootItemServer`).
+
+---
+
+## `CrateController`/old per-player score: left in place, not removed this milestone
+
+Master prompt section 11 lists "Code-built player template -> Replace" and
+implicitly expects the crate-throw mechanic to go away, but doesn't
+explicitly call out deleting `CrateController.cs` or `PlayerController`'s
+old `_score`/`AddScore`/`ResetScore`/Hold-Tab-scoreboard machinery by name.
+`PlayerController` no longer references `CrateController` at all (the
+grab/throw/push code was fully replaced by `LootItem`'s grip flow), so
+`CrateController.cs` is now genuinely dead — but it's left in the tree
+unreferenced, matching the same "defer full removal" pattern already
+established for `ArenaBuilder.cs`/`PickupController.cs` in Milestone 2,
+rather than doing a partial cleanup pass mid-milestone. Likewise, the
+per-player score/scoreboard still compiles and displays correctly (nothing
+crashes, nothing shows wrong numbers), it's just no longer fed by any
+active gameplay — removing it cleanly would also mean reworking the
+Hold-Tab scoreboard panel and the match-end "winner" announcement logic in
+`ServerBootstrap.FormatMatchResult` (which still ranks by per-player
+score), which is more surface area than this milestone's own scope
+warrants. Flagged here so a future dead-code sweep (Milestone 4 or later,
+per the master prompt's section 11 "delete dead code... keep tests green"
+rule) knows to look at all of: `CrateController.cs`, `PlayerController`'s
+`_score`/`AddScore`/`ResetScore`/`ScoreChanged`, `ClientBootstrap`'s
+Hold-Tab scoreboard panel, and `ServerBootstrap.FormatMatchResult`'s
+score-based winner logic, together — they're one connected unit of dead
+code, not several independent ones.
+
+---
+
+## Team loot total: a new `MatchManager` NetworkVariable, not a literal
+## repurpose of the per-player score field
+
+**Options**: (a) add a new `NetworkVariable<int> BankedLootTotal` on
+`MatchManager`; (b) literally repurpose `PlayerController._score` (make it
+mean "this player's share of the team total" or redirect all writes to a
+single shared instance somehow).
+
+**Chosen**: (a). A per-player score and a shared team total are different
+shapes of data (one value per player vs. one value for the whole match) —
+trying to force the existing per-player `NetworkVariable<int>` machinery to
+represent a single shared number would need its own workarounds (which
+player's copy is "the" total? do all six need to stay in sync?) that a
+plain new variable on `MatchManager` — already the one match-wide-state
+singleton every client reads (`TimeRemaining`, `MatchStarted`) — sidesteps
+entirely. Master prompt section 11's "Scoreboard -> repurpose as the team
+loot total" is satisfied in spirit (the HUD's main always-visible readout
+now shows the team total instead of individual scores) without needing to
+literally reuse the old field.
+
+---
+
 ## Thief animation: Walk_Loop reused for climbing, Crouch_* reused for crawling
 
 **Context**: `UAL1_Standard.fbx` (Quaternius Universal Animation Library)

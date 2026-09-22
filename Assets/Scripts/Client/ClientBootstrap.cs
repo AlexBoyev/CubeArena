@@ -54,6 +54,7 @@ namespace CubeArena.Client
         private Text _loginStatus;
         private Text _selectStatus;
         private Text _timerText;
+        private Text _lootTotalText;
         private Text _tabNamesText;
         private Text _tabScoresText;
         private Text _gameOverResultText;
@@ -279,6 +280,7 @@ namespace CubeArena.Client
                 // A plain countdown doesn't communicate urgency on its own — turning
                 // reddish under a minute left does, without needing to read the number.
                 _timerText.color = remaining <= 60 ? new Color(0.95f, 0.3f, 0.3f) : Color.white;
+                _lootTotalText.text = $"Loot: {MatchManager.Instance.BankedLootTotal}";
             }
 
             // FindObjectsByType also picks up the local, never-spawned player template
@@ -654,14 +656,19 @@ namespace CubeArena.Client
 
             _minimap = Minimap.Create(_canvas.transform).gameObject;
 
-            // Top-center: just the match clock now — the scoreboard moved to a Hold-Tab
-            // overlay (BuildTabScoreboardPanel) instead of sitting on screen permanently.
-            var matchPanelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(180, 70));
+            // Top-center: the match clock, and (Milestone 3) the team's banked loot
+            // total — master prompt section 11's "Scoreboard -> repurpose as the team
+            // loot total." Grown from 70 to 100 tall to fit the second line without
+            // crowding the clock. The per-player scoreboard moved to a Hold-Tab overlay
+            // (BuildTabScoreboardPanel) instead of sitting on screen permanently.
+            var matchPanelRect = UiFactory.CreatePanel(_canvas.transform, new Vector2(180, 100));
             matchPanelRect.anchorMin = matchPanelRect.anchorMax = new Vector2(0.5f, 1f);
             matchPanelRect.pivot = new Vector2(0.5f, 1f);
             matchPanelRect.anchoredPosition = new Vector2(0, -16);
             _matchHudPanel = matchPanelRect.gameObject;
-            _timerText = UiFactory.CreateText(matchPanelRect, "5:00", 28, Vector2.zero, new Vector2(160, 50));
+            _timerText = UiFactory.CreateText(matchPanelRect, "5:00", 28, new Vector2(0, 12), new Vector2(160, 40));
+            _lootTotalText = UiFactory.CreateText(matchPanelRect, "Loot: 0", 18, new Vector2(0, -20), new Vector2(160, 30));
+            _lootTotalText.color = new Color(1f, 0.85f, 0.2f); // matches the coin's own gold tint
         }
 
         // Hold Tab to see the full scoreboard as a table (Player | Score) — moved out of
@@ -947,7 +954,7 @@ namespace CubeArena.Client
             // PlayerController.CreateTemplate's comment for why runtime-only prefabs need
             // that hash assigned manually at all.
             networkManager.AddNetworkPrefab(PickupController.CreateTemplate());
-            networkManager.AddNetworkPrefab(CrateController.CreateTemplate());
+            networkManager.AddNetworkPrefab(LootItem.CreateTemplate());
             networkManager.AddNetworkPrefab(MatchManager.CreateTemplate());
             networkManager.NetworkConfig.ConnectionData = Encoding.UTF8.GetBytes(result.Ticket);
 

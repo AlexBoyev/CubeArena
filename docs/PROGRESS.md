@@ -4,7 +4,7 @@ Read this first in any new session. Current milestone, what's done, what's
 next, known issues. Updated after every completed step per
 `AUTONOMOUS_RUN.md`.
 
-## Status: Milestone 3 (the coin test) in progress
+## Status: Milestone 3 (the coin test) done, Milestone 4 next
 
 ### Milestone 1 — done, on `pocket-heist` (not merged to master yet —
 ### per AUTONOMOUS_RUN.md section 2, master gets it only at Milestone 6's end)
@@ -187,10 +187,114 @@ repurpose as the team loot total," so decide during implementation whether
 that means literally reusing the scoreboard NetworkVariable/UI plumbing
 with new semantics, or a new one; log whichever as a decision).
 
-Not yet planned further than this — implementation is delegated to a
-fork; this file and docs/DECISIONS.md/docs/PLAYTEST.md get updated with
-the real outcome once it reports back, same pattern as Milestone 2's
-thief-prefab work.
+**Built:**
+- `LootItem` (`Assets/Scripts/Shared/LootItem.cs`, new) — the multi-carrier
+  replacement for `CrateController`'s single-owner authority. Permanently
+  server-owned (`NetworkTransform`/`NetworkRigidbody` left at their default
+  `AuthorityModes.Server`, unlike `CrateController`'s deliberate `.Owner`
+  override). Server-side `Dictionary<ulong, PlayerController>` grip
+  membership; `FixedUpdate` (server-only) moves the item toward the average
+  position of its current grippers, at `DragSpeed` while below
+  `requiredCarriers` (grounded) or `CarrySpeed` at/above it (lifted to
+  `CarryHeight`). Banking is a plain horizontal-distance check against
+  `KitchenBuilder.MouseholePosition` (`BankRadius`), not a physics trigger —
+  simpler than adding scene geometry for it. Tunables
+  (`GripRange`/`DragSpeed`/`CarrySpeed`/`CarryHeight`/`BankRadius`) in a new
+  `LootSettings` ScriptableObject (`Assets/Resources/LootSettings.asset`),
+  per the run's tunables rule.
+- `PlayerController`: the old crate grab/throw/push code (`RequestGrabServerRpc`,
+  `RequestThrowServerRpc`, `OnControllerColliderHit`'s push logic, the
+  crate-seeking bot behavior) is fully replaced by a single
+  `RequestToggleGripServerRpc()` (E toggles grip/release — no throw; loot is
+  only ever carried) and a coin-test bot routine (`RunBotBehavior` ->
+  `FindNearestVisibleLootItem`/walk-to-mousehole-while-gripping). The
+  Milestone 2 climb-route bot fallback (`RunClimbTestBotBehavior`) is
+  retired — that milestone is closed and documented, and bots now default
+  to the coin test instead. `_isGrippingLoot` (a `NetworkVariable<bool>`)
+  is the client-visible mirror of server-side grip state, read by both the
+  real-keyboard and bot input paths to know whether E means grip or
+  release.
+- `MatchManager`: new `BankedLootTotal` (`NetworkVariable<int>`) and
+  `AddBankedLoot(int)`, reset in `ResetForNewRound`. A new NetworkVariable
+  rather than a literal repurpose of `PlayerController._score` (Cube
+  Arena's old per-player competitive score, left in place but no longer
+  the HUD's main readout) — see docs/DECISIONS.md.
+- `ClientBootstrap`: the top-center match panel now shows the team's
+  banked loot total alongside the clock (`"Loot: N"`, gold-tinted). The
+  per-player Hold-Tab scoreboard is untouched (still reads the old
+  per-player `_score`, now vestigial — see Known issues).
+- `ServerBootstrap`/`ClientBootstrap`: both sides' `AddNetworkPrefab` lists
+  updated to register `LootItem.CreateTemplate()` in place of
+  `CrateController.CreateTemplate()` — **this had to be caught and fixed
+  explicitly**: NGO requires the client and server's registered network
+  prefab lists to match exactly, and the client's own registration call
+  was easy to miss when only the server-side spawn logic was the obvious
+  target. Left unfixed, this would have silently broken every client
+  connection (prefab hash mismatch) despite the server working "fine" in
+  isolation.
+- One loot item spawned: the floor coin (`KitchenBuilder.LootCoinSpawnPosition`,
+  2 required carriers, value 10, per the master prompt's section 6 loot
+  table). A flattened gold cylinder placeholder (real coin meshes are
+  Milestone 4's job).
+- Real bug found and fixed via live testing, not just code review:
+  `GameObject.CreatePrimitive(PrimitiveType.Cylinder)` auto-adds a
+  `CapsuleCollider`, which does not handle the coin's extreme non-uniform
+  squash scale (`localScale` (0.8, 0.075, 0.8)) correctly — it collided
+  like a near-sphere of radius ~`CoinRadius` (confirmed live: the coin
+  rested at y≈0.39, not the ~0.075 half-thickness expected). Fixed by
+  destroying the auto-added `CapsuleCollider` and adding an explicit
+  `BoxCollider` sized to the mesh's own local bounds, which does respect
+  non-uniform scale correctly. Re-verified live afterward (coin rests at
+  y≈0.08, matching expectation).
+
+**Verified via live bot-mode tests** (three separate live runs, fresh
+dedicated server + fresh accounts each time, stale-`GameServer`-row race
+checked via `docker exec compose-postgres-1 psql` before each):
+- **2-bot run** ("Red"/"Blue"): both gripped the coin (`grippers=2/2`),
+  the transition log fired `carrying=True`, both then walked toward the
+  mousehole with the item following at a rate consistent with `CarrySpeed`
+  (~72 units over ~24s of logged movement, ≈3 m/s), and it banked cleanly:
+  `[Bank] Loot_Coin(Clone) banked for 10 (grippers=2).` No exceptions in
+  either client or the server log. **This is the milestone's actual
+  done-criterion** ("2 players on LAN carry and bank the coin").
+- **1-bot run** (isolating the under-staffed case, since the 2-bot run's
+  bots gripped in near-lockstep and never produced a 1-gripper state to
+  observe): confirmed `grippers=1/2 carrying=False`, moving at ≈1.2 m/s
+  (matching `DragSpeed`'s default exactly) — i.e. visibly slower than the
+  2-gripper carry rate, confirming drag vs. carry are genuinely different
+  speeds, not just different in name.
+- Backend suite re-verified green after all of the above: 59/59.
+- Client + dedicated server both rebuild clean in batch mode, twice (once
+  before the collider fix, once after) — zero compile errors either time.
+
+**Not verified this session — environmental blocker, not a code issue:**
+A Play-mode screenshot of the 2-bot carry was attempted but the host
+machine's desktop was remotely locked during this stretch, which forces
+Unity's windowed client onto a null/non-rendering graphics device
+(`Forcing GfxDevice: Null` in the client log) regardless of `-nographics`
+being passed or not — a screenshot captured under that device is blank/
+black, not real visual verification, and retrying doesn't change the
+outcome while the desktop stays locked. The functional behavior is fully
+confirmed via the server log traces above; only the "does it *look* right"
+check is outstanding. See docs/PLAYTEST.md.
+
+**Known imperfections / not yet done:**
+- The old per-player `PlayerController._score`/`AddScore`/`ResetScore`
+  and the Hold-Tab per-player scoreboard are still present and functional
+  but no longer meaningfully used by any gameplay (nothing awards
+  per-player score any more — `PickupController`, the only thing that
+  ever did, has been disabled since Milestone 2). Left as-is rather than
+  removed this milestone — see docs/DECISIONS.md's "not fully repurposed"
+  entry.
+- `CrateController.cs` itself is left in the tree, fully unreferenced
+  (like `ArenaBuilder.cs`/`PickupController.cs`) — not deleted this
+  milestone, per the established "defer full dead-code removal" pattern.
+- `LootItem`'s "under-staffed drag" and "carry" both move the item toward
+  the average gripper *position* rather than literally integrating each
+  gripper's live input direction — a simplification flagged and reasoned
+  through in docs/DECISIONS.md, not a bug, but worth knowing if a future
+  milestone wants tighter "feels like the team is actually pulling it"
+  fidelity.
 
 ## Milestone 2 plan
 
