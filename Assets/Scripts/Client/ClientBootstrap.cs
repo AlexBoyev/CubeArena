@@ -138,8 +138,22 @@ namespace CubeArena.Client
         // ever freezes this client's own input/camera and gives a way back to the same
         // session, same as most multiplayer games' Escape menu. Leaving is still its own
         // explicit choice, from a button in that overlay.
+        private bool _screenshotTaken;
+        private float _screenshotElapsed;
+
         private void Update()
         {
+            if (!_screenshotTaken && !string.IsNullOrEmpty(_config.ScreenshotPath))
+            {
+                _screenshotElapsed += Time.deltaTime;
+                if (_screenshotElapsed >= _config.ScreenshotDelaySeconds)
+                {
+                    _screenshotTaken = true;
+                    ScreenCapture.CaptureScreenshot(_config.ScreenshotPath);
+                    Debug.Log($"[Screenshot] captured to {_config.ScreenshotPath} at t={_screenshotElapsed:F1}s");
+                }
+            }
+
             if (_hudPanel.activeSelf)
             {
                 UpdateMatchHud();

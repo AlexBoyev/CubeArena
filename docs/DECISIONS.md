@@ -6,6 +6,82 @@ chosen, why. Newest first.
 
 ---
 
+## Thief animation: Walk_Loop reused for climbing, Crouch_* reused for crawling
+
+**Context**: `UAL1_Standard.fbx` (Quaternius Universal Animation Library)
+actually has 43 clips, not the ~86 docs/ASSETS.md's original import note
+estimated (confirmed by listing every sub-asset in the FBX directly) — and
+none of the 43 is a dedicated climb/ladder or crawl/prone clip.
+
+**Options for climbing**: (a) reuse Walk_Loop as a generic "limbs are
+moving" cue, (b) author a custom climb pose the way `Custom_HeadOnArms`
+was authored for the sleep pose (direct Humanoid muscle curves), (c) leave
+climbing visually static (no animation change).
+
+**Chosen**: (a). The actual vertical motion during climbing comes from
+`ComputeClimbMove` moving the CharacterController directly
+(`applyRootMotion` is off, same as the giant) — the animation is purely a
+"something is happening" visual cue, not the thing selling the climb
+itself (the camera framing and the character's real upward motion already
+do that). A custom muscle-curve clip is real, nontrivial authoring effort
+(see how much tuning `Custom_HeadOnArms` took) for a payoff that's
+secondary to the actual mechanic. Revisit only if a Play-mode screenshot
+or human playtest specifically flags the walk pose looking wrong while
+climbing — none has so far.
+
+**Options for crawling**: (a) reuse the Crouch_Idle_Loop/Crouch_Fwd_Loop
+clips (same as Crouching), (b) same custom-authoring path as climbing.
+
+**Chosen**: (a), same reasoning — and the part of crawling that actually
+matters for the gameplay (fitting under the crawl tunnels) is the
+CharacterController's collider height, which is completely unaffected by
+which clip plays. Crouching and Crawling are now visually identical; only
+their collision heights differ (`CrouchControllerHeight`=1.1m vs
+`CrawlControllerHeight`=0.6m, both unchanged by this milestone).
+
+---
+
+## Per-slot thief recolouring: no new code needed, reused the existing `ApplyColor` mechanism
+
+`docs/ASSETS.md` flagged this as "not wired up yet" when `ThiefModel_
+Placeholder` was first built in Milestone 1. Turned out nothing new was
+needed: `PlayerController.ApplyColor` already does `renderer.material.
+color = color` over every `Renderer` found via `GetComponentsInChildren
+<Renderer>()` on the root — this was written for the old primitive-cube
+body but is completely generic over renderer type. Once `CreateTemplate`
+instantiates the real mesh's `SkinnedMeshRenderer` under "Visual" instead
+of the cube parts, `_renderers` picks it up automatically and Unity's
+`Renderer.material` getter auto-instances a per-object material copy the
+first time it's touched — the same mechanism `MaterialUtil.ApplyLitColor`
+already relied on for the cubes. The visible effect is a colour *tint*
+over the mesh's existing skin/costume texture rather than a flat solid
+colour (unlike the plain-white cubes, which had nothing to tint against) —
+confirmed as an acceptable, clearly-distinguishable result in the
+two-bot ("Red"/"Blue") verification screenshot for this milestone, not
+worth a MaterialPropertyBlock-based system for a placeholder mesh that's
+getting replaced later anyway.
+
+---
+
+## Jump/airborne animation state inferred from position delta, not a new NetworkVariable
+
+`PlayerController` had no existing replicated "grounded" state — remote
+players are simple-interpolated (`Vector3.Lerp` toward `_serverPosition`),
+never running their own `CharacterController.Move()`, so `_characterController.
+isGrounded` is meaningless on a remote copy. Adding a `NetworkVariable<bool>`
+for grounded state was one option; instead, `AnimateVisuals` computes a
+`verticalSpeed` heuristic from frame-to-frame position delta (`rawDelta.y /
+Time.deltaTime`) — the exact same technique the pre-existing code already
+used for horizontal walk-cycle detection, just on the other axis. Works
+identically for the owner's predicted position and a remote's interpolated
+one with zero new networked state. `ThiefAnimationSettings.
+AirborneVerticalThreshold` (default 1.5 m/s) is the tunable that separates
+a real jump (`JumpSpeed`=8 initial) from ordinary reconcile jitter. Not
+exercised by this milestone's bot-mode verification (the climb-route bot
+never jumps) — flagged in docs/PROGRESS.md as worth a human sanity check.
+
+---
+
 ## Climb zones as single continuous `Climbable` segments, not sub-staged
 
 **Options**: (a) one `Climbable`-marked collider per major surface

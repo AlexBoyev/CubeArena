@@ -43,11 +43,7 @@ namespace CubeArena.Shared
         private const float StandingControllerHeight = 1.9f;
         private const float CrouchControllerHeight = 1.1f;
         private const float CrawlControllerHeight = 0.6f; // prone-low, for the crawl tunnels specifically — crouch height doesn't fit under them
-        private const float CrouchVisualScaleY = 0.6f;
-        private const float CrawlVisualScaleY = 0.32f;
-        private const float WalkSwingSpeed = 9f; // walk-cycle phase advance per meter traveled
-        private const float MaxSwingAngleDeg = 35f;
-        private const float PoseLerpSpeed = 8f; // limb-swing smoothing only — pose height/squash snap instantly, see AnimateVisuals
+        private const float WalkDetectSpeed = 0.15f; // horizontal m/s above which AnimateVisuals treats the player as walking
         private const float ThrowForce = 9f; // meters/second, along camera-forward
         private const float ThrowUpwardBoost = 2.5f; // meters/second, added so throws arc instead of skimming the ground
         private const float PushForce = 3f; // impulse applied to an un-held CrateController's Rigidbody on CharacterController contact
@@ -132,6 +128,9 @@ namespace CubeArena.Shared
         // ClimbSettingsAssetCreator has been run).
         private static ClimbSettings _climbSettings;
 
+        // Same loading convention as _climbSettings - see its comment.
+        private static ThiefAnimationSettings _thiefAnimSettings;
+
         private CharacterController _characterController;
         private Renderer[] _renderers;
         private Vector2 _lastSentInput;
@@ -146,15 +145,16 @@ namespace CubeArena.Shared
         private PlayerPose _predictedEffectivePose = PlayerPose.Standing; // owner-client-side: this frame's local clearance-check result, see _effectivePose
         private bool _inputPaused; // owner-client-side: see SetInputPaused
 
-        // Purely cosmetic (client-only — see AnimateVisuals): the swingable limb joints
-        // and walk-cycle state.
+        // Purely cosmetic (client-only — see AnimateVisuals/UpdateLocomotionAnimation).
         private Transform _visual;
-        private Transform _armLeftPivot;
-        private Transform _armRightPivot;
-        private Transform _legLeftPivot;
-        private Transform _legRightPivot;
+        private Animator _animator;
         private Vector3 _lastVisualPosition;
-        private float _walkCyclePhase;
+
+        // Locomotion-animation state, all client-only (see UpdateLocomotionAnimation).
+        private bool _wasAirborne;
+        private float _airborneElapsed;
+        private float _landStateElapsed = -1f; // negative = not currently in the post-land hold
+        private string _currentAnimState;
 
         // Nameplate: a sibling of Visual (not a child of it) so it doesn't shrink/move
         // with the crouch squash — see CreateTemplate.
@@ -184,16 +184,18 @@ namespace CubeArena.Shared
                 _climbSettings = Resources.Load<ClimbSettings>("ClimbSettings");
             }
 
+            if (_thiefAnimSettings == null)
+            {
+                _thiefAnimSettings = Resources.Load<ThiefAnimationSettings>("ThiefAnimationSettings");
+            }
+
             _characterController = GetComponent<CharacterController>();
             _renderers = GetComponentsInChildren<Renderer>();
 
             _visual = transform.Find("Visual");
             if (_visual != null)
             {
-                _armLeftPivot = _visual.Find("ArmLeft");
-                _armRightPivot = _visual.Find("ArmRight");
-                _legLeftPivot = _visual.Find("LegLeft");
-                _legRightPivot = _visual.Find("LegRight");
+                _animator = _visual.GetComponentInChildren<Animator>();
             }
 
             _nameplate = transform.Find("Nameplate");
@@ -1119,11 +1121,9 @@ namespace CubeArena.Shared
         }
 
         // Purely cosmetic, client-side only (the server never renders — see Update's
-        // !IsServer guard). Walk-cycle limb swing is driven by actual horizontal
-        // movement, which works identically for the owner's predicted position and
-        // remote players' interpolated one without needing any extra networked state.
-        // Crouch squashes the whole Visual wrapper — see CreateTemplate's comment on why
-        // it's a separate transform from the CharacterController's own collision shape.
+        // !IsServer guard). Vertical delta drives the airborne/jump heuristic the same
+        // way the pre-existing horizontal delta already drove walk detection — no new
+        // networked state needed (see UpdateLocomotionAnimation).
         private void AnimateVisuals()
         {
             if (_visual == null)
@@ -1131,47 +1131,13 @@ namespace CubeArena.Shared
                 return;
             }
 
-            var delta = transform.position - _lastVisualPosition;
+            var rawDelta = transform.position - _lastVisualPosition;
             _lastVisualPosition = transform.position;
-            delta.y = 0f;
-            var horizontalSpeed = Time.deltaTime > 0f ? delta.magnitude / Time.deltaTime : 0f;
-            var isWalking = horizontalSpeed > 0.15f;
+            var verticalSpeed = Time.deltaTime > 0f ? rawDelta.y / Time.deltaTime : 0f;
+            rawDelta.y = 0f;
+            var horizontalSpeed = Time.deltaTime > 0f ? rawDelta.magnitude / Time.deltaTime : 0f;
 
-            if (isWalking)
-            {
-                _walkCyclePhase += horizontalSpeed * WalkSwingSpeed * Time.deltaTime;
-            }
-
-            var swing = isWalking ? Mathf.Sin(_walkCyclePhase) * MaxSwingAngleDeg : 0f;
-            SetLimbSwing(_legLeftPivot, swing);
-            SetLimbSwing(_legRightPivot, -swing);
-            SetLimbSwing(_armLeftPivot, -swing);
-            SetLimbSwing(_armRightPivot, swing);
-
-            // Snapped instantly, not lerped: ApplyPoseToController resizes the actual
-            // CharacterController collider instantly too, and letting this visual squash
-            // lag a fraction of a second behind it meant the head kept its full standing
-            // height for a moment right as the (already-shrunk) collider carried the
-            // player under a low roof — visually clipping through it even though the
-            // real collision shape was already clear. Matching them exactly removes that
-            // window entirely.
-            //
-            // Driven by the *effective* pose (what the collider actually achieved), not
-            // the raw requested _pose — otherwise releasing crouch while still under a
-            // low roof popped the model to standing height even though the collider
-            // (correctly) refused to grow, which is the "player needs to stay crouched
-            // until the collision ends" bug. The owner reads its own zero-latency local
-            // result; remote viewers read the replicated one.
-            var effectivePose = IsOwner && !IsServer ? _predictedEffectivePose : _effectivePose.Value;
-            var targetScaleY = effectivePose switch
-            {
-                PlayerPose.Crawling => CrawlVisualScaleY,
-                PlayerPose.Crouching => CrouchVisualScaleY,
-                _ => 1f,
-            };
-            var scale = _visual.localScale;
-            scale.y = targetScaleY;
-            _visual.localScale = scale;
+            UpdateLocomotionAnimation(horizontalSpeed, verticalSpeed);
 
             // Billboard: always face the viewer, same as most games' nameplates — a
             // World Space Canvas doesn't do this on its own.
@@ -1181,15 +1147,98 @@ namespace CubeArena.Shared
             }
         }
 
-        private static void SetLimbSwing(Transform pivot, float targetAngleDeg)
+        // Drives the shared ThiefLocomotion AnimatorController purely via
+        // Animator.CrossFade(stateName, ...) — the controller has no built-in
+        // transition graph (see ThiefAnimatorBuilder), so this is the only thing
+        // deciding which state plays. Re-fades only when the target state actually
+        // changes (not every frame), so a held state isn't restarted repeatedly.
+        //
+        // Priority order: climbing > airborne/jump > pose-based idle/walk/sprint/
+        // crouch. Climbing and pose are read from the same owner-predicted-vs-
+        // replicated split the rest of the class already uses for movement (cosmetic
+        // lag here is imperceptible, unlike actual movement, so climbing itself is
+        // read straight from the replicated _isClimbing.Value on every instance,
+        // owner included, rather than adding a further predicted-climbing field).
+        // Airborne has no replicated state at all — see AnimateVisuals — inferred
+        // identically for the owner's predicted position and remote players'
+        // interpolated one.
+        private void UpdateLocomotionAnimation(float horizontalSpeed, float verticalSpeed)
         {
-            if (pivot == null)
+            if (_animator == null)
             {
                 return;
             }
 
-            pivot.localRotation = Quaternion.Slerp(
-                pivot.localRotation, Quaternion.Euler(targetAngleDeg, 0, 0), Time.deltaTime * PoseLerpSpeed);
+            var crossfade = _thiefAnimSettings != null ? _thiefAnimSettings.CrossfadeDuration : 0.15f;
+            var airborneThreshold = _thiefAnimSettings != null ? _thiefAnimSettings.AirborneVerticalThreshold : 1.5f;
+            var jumpStartDuration = _thiefAnimSettings != null ? _thiefAnimSettings.JumpStartDuration : 0.25f;
+            var jumpLandDuration = _thiefAnimSettings != null ? _thiefAnimSettings.JumpLandDuration : 0.2f;
+
+            var climbing = _isClimbing.Value;
+            var airborne = !climbing && Mathf.Abs(verticalSpeed) > airborneThreshold;
+
+            string targetState;
+            if (climbing)
+            {
+                // No dedicated climb clip in the Quaternius library (43 clips, see
+                // ThiefAnimatorBuilder) — Walk_Loop reused as a "limbs are moving"
+                // visual cue. The actual vertical motion comes from ComputeClimbMove,
+                // not from this clip (applyRootMotion is off). See docs/DECISIONS.md.
+                targetState = "Walk_Loop";
+                _airborneElapsed = 0f;
+                _landStateElapsed = -1f;
+            }
+            else if (_landStateElapsed >= 0f)
+            {
+                _landStateElapsed += Time.deltaTime;
+                targetState = "Jump_Land";
+                if (_landStateElapsed >= jumpLandDuration)
+                {
+                    _landStateElapsed = -1f;
+                }
+            }
+            else if (airborne)
+            {
+                _airborneElapsed += Time.deltaTime;
+                targetState = _airborneElapsed < jumpStartDuration && verticalSpeed > 0f ? "Jump_Start" : "Jump_Loop";
+            }
+            else if (_wasAirborne)
+            {
+                _landStateElapsed = 0f;
+                targetState = "Jump_Land";
+            }
+            else
+            {
+                _airborneElapsed = 0f;
+
+                // Driven by the *effective* pose (what the collider actually achieved),
+                // not the raw requested _pose — see _effectivePose's own declaration for
+                // why (releasing crouch under a low roof must keep reading as crouched
+                // until the collider can actually grow). Owner reads its own zero-latency
+                // local result; remote viewers read the replicated one.
+                var effectivePose = IsOwner && !IsServer ? _predictedEffectivePose : _effectivePose.Value;
+                var moving = horizontalSpeed > WalkDetectSpeed;
+                if (effectivePose == PlayerPose.Standing)
+                {
+                    targetState = moving ? (_sprintHeld.Value ? "Sprint_Loop" : "Walk_Loop") : "Idle_Loop";
+                }
+                else
+                {
+                    // Crouching and Crawling share the same two clips — no dedicated
+                    // crawl/prone clip exists in the library either. The collider height
+                    // (what actually matters for fitting under the crawl tunnels) is
+                    // unaffected either way. See docs/DECISIONS.md.
+                    targetState = moving ? "Crouch_Fwd_Loop" : "Crouch_Idle_Loop";
+                }
+            }
+
+            _wasAirborne = airborne;
+
+            if (targetState != _currentAnimState)
+            {
+                _currentAnimState = targetState;
+                _animator.CrossFade(targetState, crossfade);
+            }
         }
 
         // This template is built 100% at runtime (CLAUDE.md forbids hand-edited prefab
@@ -1227,6 +1276,12 @@ namespace CubeArena.Shared
             typeof(NetworkObject).GetField("GlobalObjectIdHash", BindingFlags.NonPublic | BindingFlags.Instance);
         private static readonly Vector3 TemplateParkPosition = new(0f, -1000f, 0f);
 
+        // Resources.Load names — see ThiefAnimatorBuilder for how ThiefLocomotion is
+        // built, and docs/ASSETS.md "Placeholder character structure" for
+        // ThiefModel_Placeholder's swappable-mesh wrapper design.
+        private const string ThiefModelResourceName = "ThiefModel_Placeholder";
+        private const string ThiefControllerResourceName = "ThiefLocomotion";
+
         public static GameObject CreateTemplate()
         {
             var root = new GameObject("Player");
@@ -1239,25 +1294,42 @@ namespace CubeArena.Shared
             controller.radius = 0.35f;
             controller.center = new Vector3(0, StandingControllerHeight / 2f, 0);
 
-            // All visible geometry lives under "Visual" so a crouch/crawl can squash just
-            // this wrapper (AnimateVisuals scales it on Y) without touching the
-            // CharacterController's own collision shape, which ApplyPoseToController
-            // resizes directly and separately.
+            // All visible geometry lives under "Visual" so it stays a separate
+            // transform from the CharacterController's own collision shape, which
+            // ApplyPoseToController resizes directly.
             var visual = new GameObject("Visual");
             visual.transform.SetParent(root.transform, false);
 
-            // Blocky humanoid (torso/head/arms/legs) instead of a plain 2-cube stack —
-            // still built entirely from Cube primitives (CLAUDE.md: no mesh/prefab
-            // assets), just with human-like proportions instead of a "totem pole" look.
-            // Arms/legs are a pivot-at-the-joint + a cube hanging from it (CreateLimb),
-            // so AnimateVisuals' walk-cycle swing rotates them naturally from the
-            // shoulder/hip instead of spinning the cube around its own center.
-            CreateBodyPart(visual.transform, "Torso", new Vector3(0, 1.25f, 0), new Vector3(0.5f, 0.7f, 0.3f));
-            CreateBodyPart(visual.transform, "Head", new Vector3(0, 1.775f, 0), new Vector3(0.35f, 0.35f, 0.35f));
-            CreateLimb(visual.transform, "ArmLeft", new Vector3(-0.45f, 1.575f, 0), new Vector3(0.2f, 0.65f, 0.2f));
-            CreateLimb(visual.transform, "ArmRight", new Vector3(0.45f, 1.575f, 0), new Vector3(0.2f, 0.65f, 0.2f));
-            CreateLimb(visual.transform, "LegLeft", new Vector3(-0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
-            CreateLimb(visual.transform, "LegRight", new Vector3(0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
+            // Real placeholder mesh (Quaternius Superhero, Humanoid-rigged) — replaces
+            // the earlier blocky-cube-primitive body now that CLAUDE.md allows imported
+            // prefabs (see docs/DECISIONS.md). Ground-rooted (localPosition zero) since
+            // the Humanoid rig's own root is feet-at-origin, the same convention
+            // SleepPreviewBuilder's giant stations use. Per-slot recolouring needs no
+            // special handling here — ApplyColor/_renderers below already generalizes
+            // over whatever Renderers exist under root, cube or skinned mesh alike.
+            var modelPrefab = Resources.Load<GameObject>(ThiefModelResourceName);
+            if (modelPrefab != null)
+            {
+                var modelInstance = Instantiate(modelPrefab, visual.transform);
+                modelInstance.transform.localPosition = Vector3.zero;
+                modelInstance.transform.localRotation = Quaternion.identity;
+
+                var animator = modelInstance.GetComponentInChildren<Animator>();
+                if (animator != null)
+                {
+                    animator.runtimeAnimatorController = Resources.Load<RuntimeAnimatorController>(ThiefControllerResourceName);
+                    animator.applyRootMotion = false;
+                }
+                else
+                {
+                    Debug.LogWarning($"{ThiefModelResourceName} has no Animator — thief will be visible but won't animate.");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"{ThiefModelResourceName} not found in Resources — thief will have no visible mesh. " +
+                                  "Run PocketHeist.EditorTools.SleepPreviewBuilder.Build to regenerate it.");
+            }
 
             CreateNameplate(root.transform);
 
@@ -1265,10 +1337,9 @@ namespace CubeArena.Shared
             return root;
         }
 
-        // A sibling of Visual, not a child of it, so the crouch squash (AnimateVisuals
-        // scales Visual on Y) doesn't shrink or drop the nameplate — it stays at a fixed
-        // height above the standing model either way. World Space Canvas doesn't
-        // auto-face the camera, so AnimateVisuals rotates it manually each frame.
+        // A sibling of Visual, not a child of it, so it stays at a fixed height above
+        // the model regardless of pose. World Space Canvas doesn't auto-face the
+        // camera, so AnimateVisuals rotates it manually each frame.
         private static void CreateNameplate(Transform parent)
         {
             var nameplateGo = new GameObject("Nameplate", typeof(Canvas));
@@ -1298,36 +1369,5 @@ namespace CubeArena.Shared
             text.verticalOverflow = VerticalWrapMode.Overflow;
         }
 
-        private static void CreateBodyPart(Transform parent, string name, Vector3 localPosition, Vector3 localScale)
-        {
-            var part = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            part.name = name;
-            part.transform.SetParent(parent, false);
-            part.transform.localPosition = localPosition;
-            part.transform.localScale = localScale;
-            // Collision is handled entirely by the CharacterController above — per-part
-            // colliders would just fight it, so they're removed like Body/Head were before.
-            UnityEngine.Object.Destroy(part.GetComponent<Collider>());
-            MaterialUtil.ApplyLitColor(part.GetComponent<Renderer>(), Color.white);
-        }
-
-        // A pivot at the joint (shoulder/hip) with the visible cube hanging down from
-        // it — rotating the returned pivot swings the limb from the joint instead of
-        // spinning the cube around its own center. The pivot keeps the limb's name
-        // (e.g. "ArmLeft") so Awake's transform.Find calls still resolve it directly.
-        private static void CreateLimb(Transform parent, string name, Vector3 pivotLocalPosition, Vector3 size)
-        {
-            var pivot = new GameObject(name);
-            pivot.transform.SetParent(parent, false);
-            pivot.transform.localPosition = pivotLocalPosition;
-
-            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            cube.name = name + "Cube";
-            cube.transform.SetParent(pivot.transform, false);
-            cube.transform.localPosition = new Vector3(0, -size.y / 2f, 0);
-            cube.transform.localScale = size;
-            UnityEngine.Object.Destroy(cube.GetComponent<Collider>());
-            MaterialUtil.ApplyLitColor(cube.GetComponent<Renderer>(), Color.white);
-        }
     }
 }

@@ -81,4 +81,7 @@ Thumbs.db
 # Scratch dedicated-server run logs and Editor screenshot-verification output —
 # local artifacts from manual/scripted testing, not project assets.
 gameserver.*.log
+client_*.log
+/tmp_*.log
+/tmp_*.txt
 /preview_screenshots/

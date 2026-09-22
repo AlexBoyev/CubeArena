@@ -4,7 +4,7 @@ Read this first in any new session. Current milestone, what's done, what's
 next, known issues. Updated after every completed step per
 `AUTONOMOUS_RUN.md`.
 
-## Status: Milestone 1 closed, starting Milestone 2
+## Status: Milestone 2 closed, Milestone 3 (multi-carrier loot redesign) next
 
 ### Milestone 1 — done, on `pocket-heist` (not merged to master yet —
 ### per AUTONOMOUS_RUN.md section 2, master gets it only at Milestone 6's end)
@@ -28,10 +28,11 @@ next, known issues. Updated after every completed step per
   unaffected.
 - `.claude/settings.json` permission allowlist + `AUTONOMOUS_RUN.md` committed.
 
-### Milestone 2 — in progress, core traversal mechanic done
+### Milestone 2 — done, on `pocket-heist` (not merged to master yet —
+### per AUTONOMOUS_RUN.md section 2, master gets it only at Milestone 6's end)
 Deliverable: kitchen greybox at ×25 scale with surface tags from primitives,
 thief prefab with animations, climb route to the table. Done when a thief
-can reach the table top via the chair.
+can reach the table top via the chair. All three delivered and verified.
 
 **Done so far:**
 - `KitchenBuilder.cs` (new, replaces `ArenaBuilder` as the level geometry —
@@ -63,19 +64,75 @@ can reach the table top via the chair.
   done-criterion is met.
 - Backend suite re-verified green after all of the above: 59/59.
 
-**Still open for Milestone 2:**
-- Thief prefab with real animations (replace `PlayerController`'s
-  primitive-cube visual with `ThiefModel_Placeholder`'s mesh + Quaternius
-  locomotion clips driving an Animator off the existing movement/pose
-  state) — next piece of work.
-- Minor polish: `_isClimbing` flickers true/false a few times right at
-  zone boundaries (~y 10.6–11.3 leg→seat, ~y 18.6–19.0 seat→table). Doesn't
-  block the mechanic, not yet fixed.
+- **Thief prefab with real animations, done.** `PlayerController.CreateTemplate`
+  no longer builds a primitive-cube body — it instantiates
+  `ThiefModel_Placeholder` (the real Quaternius Humanoid mesh) under
+  "Visual" and wires its `Animator` to a new shared `ThiefLocomotion`
+  AnimatorController (`Assets/Resources/ThiefLocomotion.controller`, built
+  by `ThiefAnimatorBuilder.cs` from 8 states pulled out of
+  `UAL1_Standard.fbx`'s 43 clips: `Idle_Loop`, `Walk_Loop`, `Sprint_Loop`,
+  `Crouch_Idle_Loop`, `Crouch_Fwd_Loop`, `Jump_Start`, `Jump_Loop`,
+  `Jump_Land`). `PlayerController.UpdateLocomotionAnimation` drives it
+  purely via `Animator.CrossFade(stateName, ...)` — no transition graph —
+  selecting state from climbing (highest priority) > airborne/jump
+  (inferred from vertical position delta, no new networked state needed) >
+  pose-based idle/walk/sprint/crouch. Blend/threshold timings live in a new
+  `ThiefAnimationSettings` ScriptableObject
+  (`Assets/Resources/ThiefAnimationSettings.asset`), per the run's
+  tunables rule. Per-slot recolouring needed no new code at all — the
+  existing `ApplyColor`/`_renderers` mechanism already generalizes over
+  any `Renderer`, mesh or primitive alike (see docs/DECISIONS.md).
+  The old scale-squash crouch/crawl visual and the manual limb-swing
+  walk-cycle code are both gone, replaced by the real animation clips.
+- New reusable verification tool: `ClientConfig.ScreenshotPath`/
+  `ScreenshotDelaySeconds` (env vars `CUBEARENA_SCREENSHOT_PATH`/
+  `CUBEARENA_SCREENSHOT_DELAY`) — `ClientBootstrap.Update` captures one
+  `ScreenCapture.CaptureScreenshot` at a fixed delay after launch when set.
+  Lets a live bot-mode standalone client (not just the Editor-only
+  preview-scene path `SleepPreviewScreenshotter` uses) produce a real
+  Play-mode screenshot for visual verification — used to confirm this
+  milestone, will be reused for Milestones 3-6.
+- **Verified via live bot-mode test with the real mesh**: two bots
+  ("Red", "Blue"), each on its own fresh account, walked from the
+  mousehole, climbed the chair, and reached the table top — confirmed both
+  via server log (`[Climb] Blue climbing=True/False ... y≈18.8` settling at
+  `(9.29, 18.83, 14.91)`, matching `TableCenter`/`TableTopHeight`) and via
+  two real screenshots (`preview_screenshots/thief_walk.png`,
+  `thief_climb.png` — not committed, gitignored, but inspected directly):
+  the first shows "Red" mid-stride on the rug with the real tinted mesh,
+  correct nameplate, and HUD; the second shows both "Red" and "Blue" on
+  the table top next to the giant's legs (visible for scale), each
+  correctly and distinctly recoloured, both mid-walk-cycle. No exceptions
+  in either client log or the server log across either run.
+- Backend suite re-verified green after all of the above: 59/59.
+- `.claude/settings.json`'s deny list further narrowed this stretch (at
+  the user's explicit request) — `rm`/`Remove-Item`/`cd` denials removed,
+  only `git push --force`/`git reset --hard` remain denied.
+
+**Known imperfections (not blocking, not yet fixed):**
+- `_isClimbing` flickers true/false a few times right at zone boundaries
+  (~y 10.6–11.3 leg→seat, ~y 18.6–19.0 seat→table) — cosmetic, doesn't
+  affect the animation state selection meaningfully (climbing still reads
+  correctly enough for Walk_Loop to keep playing through the flicker).
+- No dedicated climb or crawl/prone animation clip exists in the
+  Quaternius library (43 clips total, not the ~86 docs/ASSETS.md's import
+  note estimated) — Walk_Loop is reused for climbing, Crouch_* clips for
+  crawling. See docs/DECISIONS.md.
+- Jump/airborne animation state (Jump_Start/Loop/Land) is inferred purely
+  from frame-to-frame vertical position delta, since remote players don't
+  replicate a "grounded" flag — untested against an actual jump during
+  this stretch's verification (the climb-route bot never jumps); the
+  climb and locomotion states that were actually exercised are confirmed
+  bug-free, but a real jump should get a quick manual sanity check next
+  time a human is at the keyboard.
 
 ## Known issues / not yet fixed
-- Placeholder giant material only maps skin textures to every renderer —
-  renders shirtless/in briefs, no clothing. Cosmetic, not blocking. Revisit
-  when the placeholder character is replaced.
+- Placeholder character material only maps skin textures to every renderer
+  — renders shirtless/in briefs, no clothing. Previously only visible on
+  the giant; now also visible on the thief (both wrapper prefabs nest the
+  same `SuperheroMale_CharacterModel`), confirmed in this milestone's own
+  verification screenshots. Cosmetic, not blocking. Revisit when the
+  placeholder character is replaced.
 - Kenney Furniture Kit's `rugRectangle` is vertex-coloured (no texture
   atlas) — needs a URP vertex-colour shader/Shader Graph before it renders
   correctly. **Correction**: this belongs to Milestone 4's "replace
@@ -90,21 +147,28 @@ can reach the table top via the chair.
   repo — safe to delete once Milestone 2's real kitchen scene exists and
   this comparison is no longer needed.
 
+## Milestone 3 — not started
+
+Deliverable per AUTONOMOUS_RUN.md section 4: redesign the crate/loot layer
+from single-owner authority to server-owned loot with 2-5 simultaneous
+carriers, then the four real loot items and banking at the mousehole. See
+docs/DECISIONS.md's "Multi-carrier loot authority model" entry for the
+design pointer already sketched, and docs/NETCODE.md's "known limitation"
+entry for why `CrateController`'s current `ChangeOwnership` pattern can't
+support this as-is. Not yet planned in detail — do that first, per this
+run's own "plan each milestone before building it" rule.
+
 ## Milestone 2 plan
 
 1. ~~Kitchen greybox~~ — done.
 2. ~~Kenney vertex-colour URP shader for the rug~~ — **moved to Milestone
    4** (see correction above; this was mis-scoped into Milestone 2 in the
    original plan note).
-3. Thief prefab: replace the placeholder character's *role* — build a real
-   gameplay thief prefab using the same placeholder Quaternius mesh
-   (`ThiefModel_Placeholder`, already structured for an easy mesh swap
-   later) wired to `PlayerController`'s existing replicated movement state,
-   with Quaternius locomotion clips (idle/walk/run/crouch/jump/climb) from
-   `UAL1_Standard.fbx` driving an Animator off that movement state. **Not
-   yet started — next step.**
+3. ~~Thief prefab~~ — done (see above): real Quaternius mesh + Animator
+   replaces the primitive-cube body, driven by a new shared
+   `ThiefLocomotion` controller.
 4. ~~Climb route~~ — done (see above), including the climbing mechanic
    itself (not present anywhere in Cube Arena's original movement code).
-5. ~~Verify~~ — done via live bot-mode test, see above. (Manual/visual
-   Play-mode screenshot still worth doing once the thief has a real mesh,
-   since a bot log trace confirms position but not appearance.)
+5. ~~Verify~~ — done via live bot-mode test with the real mesh, two real
+   screenshots inspected directly, no exceptions in any log. **Milestone 2
+   is closed.**

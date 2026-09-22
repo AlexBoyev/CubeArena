@@ -35,9 +35,21 @@ a mesh-reference change rather than a rebuild:
   wrapper prefabs' nested instance at it — the wrappers, and anything that
   ends up referencing them (Milestone 2's actual gameplay thief prefab, the
   giant's future state-machine controller), don't need to change.
-- Per-slot thief recolouring isn't wired up yet (still Milestone 2's job,
-  "Thief prefab with animations") — `ThiefModel_Placeholder` exists as a
-  model reference only, one shared material, no tint applied.
+- Per-slot thief recolouring is wired up (Milestone 2, "Thief prefab with
+  animations") — no changes needed to this prefab itself, it's handled
+  generically by `PlayerController.ApplyColor` at runtime. See
+  docs/DECISIONS.md.
+- `ThiefModel_Placeholder`'s nested `SuperheroMale_CharacterModel`
+  instance now also has its `Animator.runtimeAnimatorController` set at
+  spawn time (`PlayerController.CreateTemplate`) to a new shared
+  `ThiefLocomotion` controller built by `Assets/Editor/PocketHeist/
+  ThiefAnimatorBuilder.cs` from 8 states pulled from this same
+  `UAL1_Standard.fbx` (`Idle_Loop`, `Walk_Loop`, `Sprint_Loop`,
+  `Crouch_Idle_Loop`, `Crouch_Fwd_Loop`, `Jump_Start`, `Jump_Loop`,
+  `Jump_Land`) — confirmed via listing every clip in the FBX directly that
+  it has 43 clips total, not the ~86 estimated when it was first imported.
+  No dedicated climb or crawl/prone clip exists; see docs/DECISIONS.md for
+  the reuse choices made for those two states.
 
 ### Sleep-clip preview — decided: candidate 4
 
