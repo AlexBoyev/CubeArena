@@ -4,7 +4,7 @@ Read this first in any new session. Current milestone, what's done, what's
 next, known issues. Updated after every completed step per
 `AUTONOMOUS_RUN.md`.
 
-## Status: Milestone 2 closed, Milestone 3 (multi-carrier loot redesign) next
+## Status: Milestone 3 (the coin test) in progress
 
 ### Milestone 1 — done, on `pocket-heist` (not merged to master yet —
 ### per AUTONOMOUS_RUN.md section 2, master gets it only at Milestone 6's end)
@@ -147,16 +147,50 @@ can reach the table top via the chair. All three delivered and verified.
   repo — safe to delete once Milestone 2's real kitchen scene exists and
   this comparison is no longer needed.
 
-## Milestone 3 — not started
+## Milestone 3 — in progress ("the coin test")
 
-Deliverable per AUTONOMOUS_RUN.md section 4: redesign the crate/loot layer
-from single-owner authority to server-owned loot with 2-5 simultaneous
-carriers, then the four real loot items and banking at the mousehole. See
-docs/DECISIONS.md's "Multi-carrier loot authority model" entry for the
-design pointer already sketched, and docs/NETCODE.md's "known limitation"
-entry for why `CrateController`'s current `ChangeOwnership` pattern can't
-support this as-is. Not yet planned in detail — do that first, per this
-run's own "plan each milestone before building it" rule.
+**Scope correction**: AUTONOMOUS_RUN.md section 4's own summary ("all four
+loot items, banking at the mousehole, team total... all three table-descent
+methods") reads as spanning this run's Milestones 3+4 together, not
+Milestone 3 alone — the master prompt's own per-milestone table
+(POCKET_HEIST_MASTER_PROMPT.md section 12) is explicit: Milestone 3 is
+**"the coin test"** — one item (the floor coin, 2 required carriers, 10
+value, per section 6's loot table), 2-player carry to the mousehole,
+banking, team total. Done when 2 players on LAN can carry and bank the
+coin and carrying feels good. The other three items (ring, wristwatch, the
+3 table coins) and all three descent methods (shove/tablecloth/chair) are
+Milestone 4's job, alongside the real-asset/lighting pass. Building the
+underlying multi-carrier system generally now (so M4 just adds more
+`LootItem` instances) but only exercising/shipping the one coin this
+milestone, per the master prompt's own done-criterion.
+
+**Design** (see docs/DECISIONS.md's "Multi-carrier loot authority model"
+entry for the pointer already sketched, and docs/NETCODE.md's "known
+limitation" entry for why `CrateController`'s current per-holder
+`NetworkObject.ChangeOwnership()` pattern can't support 2+ simultaneous
+carriers): loot stays **permanently server-owned**; each gripping client
+sends its own input intent via `ServerRpc`, the server averages all
+current grippers' intent and moves the item itself (still via
+`NetworkRigidbody`/`NetworkTransform` for the physics/replication layer —
+only the *authority* model changes, not the underlying sync mechanism).
+Below `requiredCarriers` grippers: slow drag speed + no lift (item stays
+grounded, dragged). At/above `requiredCarriers`: full carry speed, lifted.
+A carrier disconnecting mid-carry just removes their grip from the average
+— server-side cleanup already has a natural place to hook this via
+`OnNetworkDespawn`/NGO's disconnect callback, the same way `PlayerController`
+already tracks `ActiveServerPlayers`. Banking: a trigger volume at
+`KitchenBuilder.MouseholePosition` that despawns the loot item and credits
+its `value` to a new shared team-total `NetworkVariable<int>` (not
+per-player `PlayerController.AddScore`, which is Cube Arena's old
+competitive-score system — master prompt section 11 says "Scoreboard →
+repurpose as the team loot total," so decide during implementation whether
+that means literally reusing the scoreboard NetworkVariable/UI plumbing
+with new semantics, or a new one; log whichever as a decision).
+
+Not yet planned further than this — implementation is delegated to a
+fork; this file and docs/DECISIONS.md/docs/PLAYTEST.md get updated with
+the real outcome once it reports back, same pattern as Milestone 2's
+thief-prefab work.
 
 ## Milestone 2 plan
 
