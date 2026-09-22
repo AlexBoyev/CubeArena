@@ -4,7 +4,7 @@ Read this first in any new session. Current milestone, what's done, what's
 next, known issues. Updated after every completed step per
 `AUTONOMOUS_RUN.md`.
 
-## Status: Milestone 3 (the coin test) done, Milestone 4 next
+## Status: Milestone 4 (real assets, lighting, full loot, descent methods) in progress
 
 ### Milestone 1 — done, on `pocket-heist` (not merged to master yet —
 ### per AUTONOMOUS_RUN.md section 2, master gets it only at Milestone 6's end)
@@ -147,7 +147,7 @@ can reach the table top via the chair. All three delivered and verified.
   repo — safe to delete once Milestone 2's real kitchen scene exists and
   this comparison is no longer needed.
 
-## Milestone 3 — in progress ("the coin test")
+## Milestone 3 — done ("the coin test")
 
 **Scope correction**: AUTONOMOUS_RUN.md section 4's own summary ("all four
 loot items, banking at the mousehole, team total... all three table-descent
@@ -295,6 +295,68 @@ check is outstanding. See docs/PLAYTEST.md.
   through in docs/DECISIONS.md, not a bug, but worth knowing if a future
   milestone wants tighter "feels like the team is actually pulling it"
   fidelity.
+
+## Milestone 4 — not started
+
+Deliverable per POCKET_HEIST_MASTER_PROMPT.md section 12: replace the
+greybox with real assets, a lighting pass, the full table loot set, and
+all three descent methods. Done when: "the kitchen looks like the
+kitchen, and all descent methods work" (playtest).
+
+**Scope, concretely:**
+
+1. **Real geometry**, replacing `KitchenBuilder`'s primitives with the 19
+   already-imported KayKit Restaurant Bits models (see docs/ASSETS.md —
+   `kitchentable_A_large`, `chair_A`, `fridge_A`, `kitchencounter_sink`,
+   `kitchencounter_straight_A`, `wall`, `wall_window_closed`,
+   `wall_doorway`, `door_A`, plus tableware/food props for set dressing:
+   `plate`, `plate_dirty`, `food_burger`, `pot_A`, `pan_A`, `jar_A_medium`,
+   `knife`, `cuttingboard`, `stove_single` — per section 6's table
+   description, "wallet with 3 coins, ring, wristwatch, glowing phone,
+   half sandwich, mug" should be visible on the table top, using whatever
+   of these props reads closest). Geometry-critical pieces (table, chair,
+   walls, fridge, counter) are must-have; food/tableware set-dressing is
+   nice-to-have, not blocking the done-criterion. The existing `Climbable`/
+   `SurfaceType` marker components need to move from the primitive
+   placeholders onto the real meshes' colliders — don't lose the working
+   climb route or noise-model surface tags from Milestone 2 in the swap.
+2. **Kenney vertex-colour URP shader for the rug** (`rugRectangle`,
+   already imported, no texture atlas — see docs/ASSETS.md's note) —
+   deferred from Milestone 2 to here, see the correction in the old
+   Milestone 2 plan note below.
+3. **Lighting pass** per section 10: moonlight (directional through the
+   window, cool blue, low intensity, shadows on), fridge spot (warm
+   yellow, floor pool), phone point light (cold white — static placement
+   is fine this milestone, the "pulses on buzz"/search-cone behavior is
+   Milestone 6's giant-state-machine job), ambient very dark blue
+   (under-table areas genuinely dark). Post-processing: low bloom,
+   vignette, subtle film grain, depth fog for scale; dust particles in
+   the moonbeam if time allows (nice-to-have).
+4. **Full loot set**: the 3 remaining table coins (by the wallet, 2
+   carriers, value 10 each), the ring (beside the giant's hand, 3
+   carriers, value 50), the wristwatch (far corner, 5 carriers, value
+   120) — all as more `LootItem` instances per Milestone 3's now-general
+   system, per section 6's loot table. The floor coin from Milestone 3
+   stays as-is.
+5. **All three descent methods** (section 6): the chair climb route
+   already works (Milestone 2). Add:
+   - **Shove off the edge**: instant, drops the item straight off the
+     table (real physics fall, not a teleport) — the noise spike (+60)
+     itself is Milestone 5's job (noise model doesn't exist yet), so this
+     milestone just needs the shove action and the fall; leave an obvious
+     hook point for Milestone 5 to add the noise emission, the same
+     pattern `LootItem`'s under-staffed drag already left for noise.
+   - **Lower down the tablecloth**: a slower, controlled descent at the
+     tablecloth corner (east edge, per section 6) — likely a second
+     `Climbable`-style zone thieves can use while gripping loot, moving
+     it down at a controlled rate rather than a free fall. Design the
+     specifics during implementation and log the decision.
+   Playtest done-criterion is explicit that all three must stay viable,
+   not just work — don't let one trivially dominate the other two.
+
+Not yet planned further than this — implementation delegated to a fork,
+same pattern as Milestones 2 and 3. This file, docs/DECISIONS.md, and
+docs/PLAYTEST.md get updated with the real outcome once it reports back.
 
 ## Milestone 2 plan
 
