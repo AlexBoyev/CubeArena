@@ -45,11 +45,26 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<int> _endMatchVoteCount = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        // The team's shared banked-loot total (Milestone 3) — master prompt section 11's
+        // "Scoreboard -> repurpose as the team loot total." A new NetworkVariable rather
+        // than a literal repurpose of PlayerController's per-player _score (Cube Arena's
+        // old competitive-score field, left in place but no longer the HUD's main
+        // readout — see docs/DECISIONS.md): a per-player score and a shared team total
+        // are different shapes of data, and MatchManager is already the one
+        // match-wide-state singleton every client reads, so it's the natural home for it.
+        private readonly NetworkVariable<int> _bankedLootTotal = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
         private bool _hasEnded;
 
         public float TimeRemaining => _timeRemaining.Value;
         public bool MatchStarted => _matchStarted.Value;
         public int EndMatchVoteCount => _endMatchVoteCount.Value;
+        public int BankedLootTotal => _bankedLootTotal.Value;
+
+        // Server-only: called by LootItem when an item's carriers bring it within
+        // BankRadius of the mousehole.
+        public void AddBankedLoot(int amount) => _bankedLootTotal.Value += amount;
 
         public override void OnNetworkSpawn()
         {
@@ -153,6 +168,7 @@ namespace CubeArena.Shared
             _hasEnded = false;
             _endMatchVotes.Clear();
             _endMatchVoteCount.Value = 0;
+            _bankedLootTotal.Value = 0;
         }
 
         // Same runtime-prefab requirements as PlayerController.CreateTemplate — see its

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using CubeArena.Shared.Tuning;
 using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
@@ -42,14 +43,7 @@ namespace CubeArena.Shared
         private const float StandingControllerHeight = 1.9f;
         private const float CrouchControllerHeight = 1.1f;
         private const float CrawlControllerHeight = 0.6f; // prone-low, for the crawl tunnels specifically — crouch height doesn't fit under them
-        private const float CrouchVisualScaleY = 0.6f;
-        private const float CrawlVisualScaleY = 0.32f;
-        private const float WalkSwingSpeed = 9f; // walk-cycle phase advance per meter traveled
-        private const float MaxSwingAngleDeg = 35f;
-        private const float PoseLerpSpeed = 8f; // limb-swing smoothing only — pose height/squash snap instantly, see AnimateVisuals
-        private const float ThrowForce = 9f; // meters/second, along camera-forward
-        private const float ThrowUpwardBoost = 2.5f; // meters/second, added so throws arc instead of skimming the ground
-        private const float PushForce = 3f; // impulse applied to an un-held CrateController's Rigidbody on CharacterController contact
+        private const float WalkDetectSpeed = 0.15f; // horizontal m/s above which AnimateVisuals treats the player as walking
 
         private readonly NetworkVariable<Vector3> _serverPosition = new(
             writePerm: NetworkVariableWritePermission.Server);
@@ -72,6 +66,20 @@ namespace CubeArena.Shared
             writePerm: NetworkVariableWritePermission.Server);
 
         private readonly NetworkVariable<bool> _sprintHeld = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
+        // Server-authoritative: whether this tick's movement used climb mode instead of
+        // normal grounded movement. See the "Climbing" section below.
+        private readonly NetworkVariable<bool> _isClimbing = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
+        // Server-authoritative: whether this player currently has a grip on a LootItem —
+        // read client-side purely so the owner's own E-key handler knows whether to send
+        // a grip or release request (see RequestToggleGripServerRpc). The actual
+        // authoritative record of who's gripping what lives on LootItem itself
+        // (_grippedLootItemServer below, server-only); this bool is just the client-
+        // visible mirror of that.
+        private readonly NetworkVariable<bool> _isGrippingLoot = new(
             writePerm: NetworkVariableWritePermission.Server);
 
         // Server-authoritative sprint resource — only SimulateMovement (server) ever
@@ -116,6 +124,29 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<float> _facingYaw = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        // Milestone 2 diagnostic - see the periodic [Pos] log in SimulateMovement.
+        private float _lastPositionLogTime;
+
+        // Loaded once, shared by every PlayerController instance (client and server both
+        // load their own copy of the same asset — see ClimbSettings.cs). Null-checked at
+        // each use site with a hardcoded fallback rather than assumed non-null, in case
+        // the Resources asset is ever missing (e.g. a fresh checkout before
+        // ClimbSettingsAssetCreator has been run).
+        private static ClimbSettings _climbSettings;
+
+        // Same loading convention as _climbSettings - see its comment.
+        private static ThiefAnimationSettings _thiefAnimSettings;
+
+        // Same loading convention as _climbSettings - see its comment.
+        private static LootSettings _lootSettings;
+
+        // Server-only: the LootItem this player currently has a grip on, or null. The
+        // authoritative record (LootItem itself only ever learns about grips through
+        // ServerAddGripper/ServerRemoveGripper) — this is just this player's own side of
+        // that relationship, kept so RequestToggleGripServerRpc and disconnect cleanup
+        // (OnNetworkDespawn) don't need to scan LootItem.ActiveServerLootItems to find it.
+        private LootItem _grippedLootItemServer;
+
         private CharacterController _characterController;
         private Renderer[] _renderers;
         private Vector2 _lastSentInput;
@@ -130,15 +161,16 @@ namespace CubeArena.Shared
         private PlayerPose _predictedEffectivePose = PlayerPose.Standing; // owner-client-side: this frame's local clearance-check result, see _effectivePose
         private bool _inputPaused; // owner-client-side: see SetInputPaused
 
-        // Purely cosmetic (client-only — see AnimateVisuals): the swingable limb joints
-        // and walk-cycle state.
+        // Purely cosmetic (client-only — see AnimateVisuals/UpdateLocomotionAnimation).
         private Transform _visual;
-        private Transform _armLeftPivot;
-        private Transform _armRightPivot;
-        private Transform _legLeftPivot;
-        private Transform _legRightPivot;
+        private Animator _animator;
         private Vector3 _lastVisualPosition;
-        private float _walkCyclePhase;
+
+        // Locomotion-animation state, all client-only (see UpdateLocomotionAnimation).
+        private bool _wasAirborne;
+        private float _airborneElapsed;
+        private float _landStateElapsed = -1f; // negative = not currently in the post-land hold
+        private string _currentAnimState;
 
         // Nameplate: a sibling of Visual (not a child of it) so it doesn't shrink/move
         // with the crouch squash — see CreateTemplate.
@@ -163,16 +195,28 @@ namespace CubeArena.Shared
 
         private void Awake()
         {
+            if (_climbSettings == null)
+            {
+                _climbSettings = Resources.Load<ClimbSettings>("ClimbSettings");
+            }
+
+            if (_thiefAnimSettings == null)
+            {
+                _thiefAnimSettings = Resources.Load<ThiefAnimationSettings>("ThiefAnimationSettings");
+            }
+
+            if (_lootSettings == null)
+            {
+                _lootSettings = Resources.Load<LootSettings>("LootSettings");
+            }
+
             _characterController = GetComponent<CharacterController>();
             _renderers = GetComponentsInChildren<Renderer>();
 
             _visual = transform.Find("Visual");
             if (_visual != null)
             {
-                _armLeftPivot = _visual.Find("ArmLeft");
-                _armRightPivot = _visual.Find("ArmRight");
-                _legLeftPivot = _visual.Find("LegLeft");
-                _legRightPivot = _visual.Find("LegRight");
+                _animator = _visual.GetComponentInChildren<Animator>();
             }
 
             _nameplate = transform.Find("Nameplate");
@@ -210,8 +254,28 @@ namespace CubeArena.Shared
         {
             if (IsServer)
             {
+                // A carrier disconnecting mid-carry drops their grip cleanly (master
+                // prompt section 7) — LootItem.FixedUpdate just recomputes its average
+                // over whoever's left next tick, no special-casing needed there.
+                if (_grippedLootItemServer != null)
+                {
+                    _grippedLootItemServer.ServerRemoveGripper(OwnerClientId);
+                    _grippedLootItemServer = null;
+                }
+
                 ActiveServerPlayers.Remove(this);
             }
+        }
+
+        // Server-only: called by LootItem when this player's grip ends for a reason
+        // LootItem itself initiated (banking, or defensive despawn cleanup) rather than
+        // this player releasing it themselves — keeps _grippedLootItemServer/
+        // _isGrippingLoot in sync either way, so a player whose item just got banked
+        // sees their own next E-press try a fresh grip rather than a stale release.
+        public void ServerClearGrip()
+        {
+            _grippedLootItemServer = null;
+            _isGrippingLoot.Value = false;
         }
 
         // Server-only: called by PickupController when this player collects one.
@@ -337,6 +401,14 @@ namespace CubeArena.Shared
         // wrong window if a real client happens to be focused at the same time.
         public static bool BotModeEnabled;
 
+        // Bot mode only: which scripted routine RunBotBehavior runs — see
+        // ClientConfig.BotTestMode's declaration for the full explanation. "" (default,
+        // Milestone 3's coin-test routine), "lootdescent" (Milestone 4's shove-descent
+        // verification routine), or "banktest" (Milestone 4's chair-climb + new-item
+        // grip/carry/bank verification routine — both share RunLootDescentTestBotBehavior's
+        // climb-to-table-item phases, diverging only after the grip: shove vs. carry home).
+        public static string BotTestMode = "";
+
         private void ReadAndSendInput()
         {
             if (BotModeEnabled)
@@ -383,26 +455,26 @@ namespace CubeArena.Shared
                     SetSprintServerRpc(sprintHeld);
                 }
 
-                // Same key grabs and throws — press E with nothing held to grab the
-                // nearest crate in range/in front; press it again while holding one to
-                // throw it. CrateController.LocalHeldCrate is this client's own
-                // (client-side only) record of what it's currently holding, kept in sync
-                // by CrateController.OnOwnershipChanged rather than tracked here, since
-                // the server — not this input handler — is what actually decides whether
-                // a grab succeeds.
+                // Same key grips and releases — the server (not this input handler)
+                // decides whether a grip request succeeds and toggles based on whether
+                // this player already has one, via _isGrippingLoot's replicated value
+                // (see RequestToggleGripServerRpc). No throw/velocity computation needed
+                // any more — loot is only ever carried, never thrown (unlike the old
+                // CrateController crates).
                 if (keyboard.eKey.wasPressedThisFrame)
                 {
-                    if (CrateController.LocalHeldCrate != null)
-                    {
-                        var cam = Camera.main;
-                        var throwVelocity = (cam != null ? cam.transform.forward : transform.forward) * ThrowForce
-                                             + Vector3.up * ThrowUpwardBoost;
-                        RequestThrowServerRpc(throwVelocity);
-                    }
-                    else
-                    {
-                        RequestGrabServerRpc();
-                    }
+                    RequestToggleGripServerRpc();
+                }
+
+                // Milestone 4's "shove it off the edge" descent method (section 6) — a
+                // distinct, deliberate action from the gentle E-release, only meaningful
+                // while already gripping something (RequestShoveLootServerRpc no-ops
+                // otherwise). Fast/instant and risky, unlike carrying it down the chair
+                // or lowering it down the tablecloth (both just the ordinary grip + climb
+                // path — see LootItem's gripper-relative carry height, docs/DECISIONS.md).
+                if (keyboard.fKey.wasPressedThisFrame)
+                {
+                    RequestShoveLootServerRpc();
                 }
             }
 
@@ -440,56 +512,73 @@ namespace CubeArena.Shared
         }
 
         // Owner-client-side only, only reached when BotModeEnabled — see its declaration.
-        // Deliberately simple: it only needs to generate realistic movement + push/grab/
-        // throw network traffic for the bandwidth load test, not play well. Wanders
-        // toward the nearest un-held crate, grabs it once in range, holds briefly, throws
-        // it, repeats.
-        private CrateController _botTargetCrate;
+        // Milestone 3's verification vehicle for "the coin test": walk to the nearest
+        // ungripped loot item, grip it, then walk toward the mousehole while still
+        // gripping (the item itself follows the average gripper position — see
+        // LootItem.FixedUpdate — so simply moving the bot's own body toward the
+        // mousehole while gripped is enough to drag/carry the item along; no separate
+        // "carry" bot state needed). Once the item banks, LootItem.ServerClearGrip
+        // resets _isGrippingLoot to false server-side, which this reads next tick to go
+        // pick a new target — in practice, for M3's single coin, that just means
+        // standing near the mousehole with nothing left to do.
+        private LootItem _botTargetLoot;
         private float _botStateTimer;
-        // Separate from _botStateTimer (which governs target/throw pacing): without this,
-        // RunBotBehavior would call RequestGrabServerRpc() on every single Update() while
-        // in range and unheld. Update() is uncapped in a -batchmode -nographics build (no
-        // Application.targetFrameRate set, no vsync) and can run tens of thousands of
-        // times/sec — confirmed via a real 2-bot smoke test, where the contesting bot's
-        // bandwidth ran ~10x its rival's before this fix. The real-keyboard path doesn't
-        // have this problem since it's edge-triggered on wasPressedThisFrame (one keypress
-        // = one RPC); a bot has no "key press" to edge-detect against, so it needs an
-        // explicit cooldown instead — long enough for a grab's ownership change to
-        // round-trip and flip LocalHeldCrate (which is what actually stops the retries).
-        private float _botGrabRequestCooldown;
+        // Separate from _botStateTimer: without this, RunBotBehavior would call
+        // RequestToggleGripServerRpc() on every single Update() while in range and not
+        // yet gripping — Update() is uncapped in a -batchmode -nographics build and can
+        // run tens of thousands of times/sec (see the original crate-bot version of this
+        // same problem, docs/NETCODE.md). A toggle RPC spammed that fast would just
+        // grip-then-immediately-release-then-immediately-grip every call, never settling
+        // — this cooldown gives one request time to actually land and _isGrippingLoot to
+        // replicate back before trying again.
+        private float _botGripRequestCooldown;
 
         private void RunBotBehavior()
         {
-            _botStateTimer -= Time.deltaTime;
-            _botGrabRequestCooldown -= Time.deltaTime;
-
-            if (CrateController.LocalHeldCrate != null)
+            if (BotTestMode == "lootdescent" || BotTestMode == "banktest")
             {
-                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
-                if (_botStateTimer <= 0f)
+                RunLootDescentTestBotBehavior();
+                return;
+            }
+
+            _botStateTimer -= Time.deltaTime;
+            _botGripRequestCooldown -= Time.deltaTime;
+
+            if (_isGrippingLoot.Value)
+            {
+                // Already gripping something — walk it toward the mousehole. The item
+                // follows the average of its grippers' positions on its own (server-
+                // side), so this bot just needs to keep moving there like any other
+                // destination.
+                var toMousehole = KitchenBuilder.MouseholePosition - transform.position;
+                toMousehole.y = 0f;
+                if (toMousehole.sqrMagnitude < 0.01f)
                 {
-                    var throwVelocity = transform.forward * ThrowForce + Vector3.up * ThrowUpwardBoost;
-                    RequestThrowServerRpc(throwVelocity);
-                    _botTargetCrate = null;
-                    _botStateTimer = UnityEngine.Random.Range(1.5f, 3f); // cooldown before picking a new target
+                    CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                    return;
                 }
 
+                var mouseholeDir = toMousehole.normalized;
+                var mouseholeYaw = Quaternion.LookRotation(mouseholeDir, Vector3.up).eulerAngles.y;
+                CommitWorldInputAndFacing(new Vector2(mouseholeDir.x, mouseholeDir.z), mouseholeYaw);
                 return;
             }
 
-            if (_botTargetCrate == null || _botStateTimer <= 0f)
+            if (_botTargetLoot == null || !_botTargetLoot.IsSpawned || _botStateTimer <= 0f)
             {
-                _botTargetCrate = FindNearestVisibleCrate();
-                _botStateTimer = 6f; // give up and re-pick after this long regardless
+                _botTargetLoot = FindNearestVisibleLootItem();
+                _botStateTimer = 10f; // give up and re-pick after this long regardless
             }
 
-            if (_botTargetCrate == null)
+            if (_botTargetLoot == null)
             {
+                // Nothing left to do (e.g. the one coin's already banked) — stand still
+                // rather than wandering.
                 CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
                 return;
             }
 
-            var toTarget = _botTargetCrate.transform.position - transform.position;
+            var toTarget = _botTargetLoot.transform.position - transform.position;
             toTarget.y = 0f;
             if (toTarget.sqrMagnitude < 0.01f)
             {
@@ -500,12 +589,13 @@ namespace CubeArena.Shared
             var direction = toTarget.normalized;
             var facingYaw = Quaternion.LookRotation(direction, Vector3.up).eulerAngles.y;
 
-            if (toTarget.magnitude <= CrateController.GrabRange * 0.8f)
+            var gripRange = _lootSettings != null ? _lootSettings.GripRange : 2.5f;
+            if (toTarget.magnitude <= gripRange * 0.8f)
             {
-                if (_botGrabRequestCooldown <= 0f)
+                if (_botGripRequestCooldown <= 0f)
                 {
-                    RequestGrabServerRpc();
-                    _botGrabRequestCooldown = 0.5f; // let ownership resolve before retrying
+                    RequestToggleGripServerRpc();
+                    _botGripRequestCooldown = 0.5f; // let the grip resolve before retrying
                 }
 
                 CommitWorldInputAndFacing(Vector2.zero, facingYaw);
@@ -517,23 +607,190 @@ namespace CubeArena.Shared
             CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
         }
 
-        private CrateController FindNearestVisibleCrate()
+        // Owner-client-side only, only reached when BotModeEnabled and BotTestMode ==
+        // "lootdescent" or "banktest" — Milestone 4's verification routines: climb to the
+        // table (reusing the exact Milestone 2 chair route, still proximity-gated and
+        // unchanged), grip a table-top loot item, then either shove it off the edge
+        // ("lootdescent", exercising ServerShove's real-physics fall) or carry it back down
+        // the same climb route and bank it at the mousehole ("banktest", exercising a new
+        // loot item's grip/carry/bank end-to-end on real geometry — added after a live
+        // default-mode run showed FindNearestVisibleLootItem preferring the M3 floor coin
+        // over any table item for bots spawned at the actual spawn points, so the coin-test
+        // routine alone couldn't exercise a new item without this explicit target). Both
+        // confirmed via the server's [Climb]/[Loot]/[Bank] log lines.
+        private enum LootDescentPhase
         {
-            var crates = FindObjectsByType<CrateController>(FindObjectsSortMode.None);
-            CrateController nearest = null;
-            var nearestDistSqr = float.MaxValue;
-            foreach (var crate in crates)
+            ToChair,
+            ToItem, // climbs straight up the chair column to table height — see below
+            AcrossTable, // walks from directly above the chair to the item's real XZ, at table height
+            Grip,
+            Shove,
+            ToMousehole, // banktest only — carries the item back down the same climb route
+            Done,
+        }
+
+        private LootDescentPhase _lootDescentPhase;
+        private float _lootDescentActionCooldown;
+
+        // Deliberately KitchenBuilder.SeatToTableClimbX, not the chair leg's own (further
+        // out) X — see LootDescentTableTopArrivalPoint's comment. ComputeClimbMove's
+        // forward-aligned dot product means this bot produces ~zero real lateral drift
+        // once climbing starts (facing always tracks input by construction, so
+        // Dot(input, right) ≈ 0 the whole time) — the *only* phase that can actually move
+        // the bot sideways is this one, ordinary grounded walking before climbing engages.
+        // Landing here first, already lined up with the climb column's own center, is what
+        // keeps the entire subsequent straight-up climb solidly supported.
+        private static Vector3 LootDescentChairWaypoint =>
+            new(KitchenBuilder.SeatToTableClimbX, 0f, KitchenBuilder.TableCenter.z);
+
+        // Directly above the SeatToTable_Climbable zone's own center (not the chair leg's
+        // own X, which is 1.1 units further out — see docs/DECISIONS.md's "seam" entry for
+        // why that distinction matters: climbing dead-center on the leg's X left the
+        // character resting at the very edge of the zone above it, an unreliable sliver of
+        // support) at table height — climbing straight up here (zero XZ drift) keeps the
+        // bot solidly inside the SeatToTable_Climbable zone the whole way, avoiding a
+        // separate real bug found via live testing: aiming the climb straight at an
+        // off-center table item's full 3D position (e.g. WalletCoin1, 6 units off the
+        // chair's own Z) makes ComputeClimbMove's forward-aligned dot product route nearly
+        // all movement intent into vertical climb with ~zero lateral shift (since the bot's
+        // facing already points toward that diagonal target, forward ≈ input), so the bot
+        // never actually drifts toward the item while climbing — then the known cosmetic
+        // leg→seat boundary flicker (docs/DECISIONS.md's "Climb zones" entry) drops
+        // IsNearClimbable for a moment, normal gravity + normal horizontal walk-toward-
+        // target movement immediately take over, and the bot walks off the climb column's
+        // XZ before it can re-enter it — ending up back on the floor, not part-way up. A
+        // real player naturally avoids this by climbing straight up first and walking
+        // across the table afterward; the bot now does the same explicitly.
+        private static Vector3 LootDescentTableTopArrivalPoint =>
+            new(KitchenBuilder.SeatToTableClimbX, KitchenBuilder.TableTopHeight, LootDescentChairWaypoint.z);
+
+        private void RunLootDescentTestBotBehavior()
+        {
+            _lootDescentActionCooldown -= Time.deltaTime;
+
+            Vector3 target;
+            switch (_lootDescentPhase)
             {
-                if (crate.IsHeld)
+                case LootDescentPhase.ToChair:
+                    target = LootDescentChairWaypoint;
+                    break;
+                case LootDescentPhase.ToItem:
+                    // Straight up the chair column (zero XZ drift) — see
+                    // LootDescentTableTopArrivalPoint's comment for why this must stay
+                    // directly above the chair rather than aiming at the item's own XZ.
+                    // IsNearClimbable engages automatically based on proximity to any
+                    // Climbable collider, exactly like a real player (Milestone 2).
+                    target = LootDescentTableTopArrivalPoint;
+                    break;
+                case LootDescentPhase.AcrossTable:
+                    // Now at table height and off any Climbable zone — this is just
+                    // ordinary horizontal walking across the table's own flat top
+                    // collider, the same as walking on any other floor surface.
+                    target = KitchenBuilder.WalletCoin1SpawnPosition;
+                    break;
+                case LootDescentPhase.Grip:
+                    if (!_isGrippingLoot.Value)
+                    {
+                        if (_lootDescentActionCooldown <= 0f)
+                        {
+                            RequestToggleGripServerRpc();
+                            _lootDescentActionCooldown = 0.5f;
+                        }
+
+                        CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                        return;
+                    }
+
+                    _lootDescentPhase = BotTestMode == "banktest" ? LootDescentPhase.ToMousehole : LootDescentPhase.Shove;
+                    return;
+                case LootDescentPhase.Shove:
+                    if (_lootDescentActionCooldown <= 0f)
+                    {
+                        RequestShoveLootServerRpc();
+                        _lootDescentPhase = LootDescentPhase.Done;
+                    }
+
+                    CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                    return;
+                case LootDescentPhase.ToMousehole:
+                    // No explicit "bank" action — LootItem itself banks on proximity while
+                    // still gripped (the same mechanism the default coin-test routine
+                    // relies on), so this phase just needs to keep walking toward the
+                    // mousehole while still gripping.
+                    target = KitchenBuilder.MouseholePosition;
+                    break;
+                default:
+                    CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                    return;
+            }
+
+            var toTarget = target - transform.position;
+            var toTargetXZ = new Vector3(toTarget.x, 0f, toTarget.z);
+
+            if (_lootDescentPhase == LootDescentPhase.ToChair && toTargetXZ.magnitude <= WaypointSwitchDistance)
+            {
+                _lootDescentPhase = LootDescentPhase.ToItem;
+                return;
+            }
+
+            if (_lootDescentPhase == LootDescentPhase.ToItem && toTarget.magnitude <= WaypointSwitchDistance)
+            {
+                _lootDescentPhase = LootDescentPhase.AcrossTable;
+                return;
+            }
+
+            if (_lootDescentPhase == LootDescentPhase.AcrossTable && toTarget.magnitude <= WaypointSwitchDistance)
+            {
+                _lootDescentPhase = LootDescentPhase.Grip;
+                return;
+            }
+
+            if (_lootDescentPhase == LootDescentPhase.ToMousehole && toTargetXZ.magnitude <= WaypointSwitchDistance)
+            {
+                // Banking itself already happened server-side via LootItem's own proximity
+                // check by the time distance closes this far, or is about to on the next
+                // tick — either way, this phase's job is done.
+                _lootDescentPhase = LootDescentPhase.Done;
+                return;
+            }
+
+            if (toTargetXZ.sqrMagnitude < 0.01f)
+            {
+                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                return;
+            }
+
+            var direction = toTargetXZ.normalized;
+            var facingYaw = Quaternion.LookRotation(direction, Vector3.up).eulerAngles.y;
+            CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
+        }
+
+        private const float WaypointSwitchDistance = 3f;
+
+        private LootItem FindNearestVisibleLootItem()
+        {
+            var items = FindObjectsByType<LootItem>(FindObjectsSortMode.None);
+            LootItem nearest = null;
+            var nearestDistSqr = float.MaxValue;
+            foreach (var item in items)
+            {
+                // Every client keeps one never-spawned LootItem template parked at
+                // (0,-1000,0) purely so NGO has something to register as a network
+                // prefab — see LootItem.CreateTemplate, same convention as
+                // PlayerController's own template, and the exact IsSpawned pitfall
+                // documented in docs/DECISIONS.md ("FindNearestVisibleCrate must check
+                // IsSpawned") that this class fixes from the start rather than
+                // rediscovering.
+                if (!item.IsSpawned)
                 {
                     continue;
                 }
 
-                var distSqr = (crate.transform.position - transform.position).sqrMagnitude;
+                var distSqr = (item.transform.position - transform.position).sqrMagnitude;
                 if (distSqr < nearestDistSqr)
                 {
                     nearestDistSqr = distSqr;
-                    nearest = crate;
+                    nearest = item;
                 }
             }
 
@@ -595,27 +852,40 @@ namespace CubeArena.Shared
                 _predictedJumpRequested = false;
             }
 
-            var grounded = _characterController.isGrounded;
-            if (_predictedJumpRequested && grounded)
+            // Mirrors SimulateMovement's climb branch — see its comment. Predicted purely
+            // locally (IsNearClimbable reads real colliders, same on both sides), same as
+            // every other predicted movement here; the reconcile below still absorbs any
+            // mismatch against the server's own climbing decision.
+            var predictedClimbing = matchActive && _predictedEffectivePose == PlayerPose.Standing && IsNearClimbable();
+            if (predictedClimbing)
             {
-                _predictedVerticalVelocity = MovementConstants.JumpSpeed;
-                _predictedJumpRequested = false;
-            }
-            else if (grounded)
-            {
-                if (_predictedVerticalVelocity < 0f)
-                {
-                    _predictedVerticalVelocity = -2f;
-                }
+                _predictedVerticalVelocity = 0f;
+                _characterController.Move(ComputeClimbMove(predictedInput, Time.deltaTime));
             }
             else
             {
-                _predictedVerticalVelocity += MovementConstants.Gravity * Time.deltaTime;
-            }
+                var grounded = _characterController.isGrounded;
+                if (_predictedJumpRequested && grounded)
+                {
+                    _predictedVerticalVelocity = MovementConstants.JumpSpeed;
+                    _predictedJumpRequested = false;
+                }
+                else if (grounded)
+                {
+                    if (_predictedVerticalVelocity < 0f)
+                    {
+                        _predictedVerticalVelocity = -2f;
+                    }
+                }
+                else
+                {
+                    _predictedVerticalVelocity += MovementConstants.Gravity * Time.deltaTime;
+                }
 
-            var move = new Vector3(predictedInput.x, 0, predictedInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * Time.deltaTime)
-                       + Vector3.up * (_predictedVerticalVelocity * Time.deltaTime);
-            _characterController.Move(move);
+                var move = new Vector3(predictedInput.x, 0, predictedInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * Time.deltaTime)
+                           + Vector3.up * (_predictedVerticalVelocity * Time.deltaTime);
+                _characterController.Move(move);
+            }
 
             var error = _serverPosition.Value - transform.position;
             if (error.sqrMagnitude > ReconcileSnapThresholdSqr)
@@ -662,80 +932,72 @@ namespace CubeArena.Shared
         }
 
         // Default RequireOwnership=true is exactly right here (unlike e.g. MatchManager's
-        // vote RPC) — a player can only ever request a grab/throw through their own
-        // PlayerController, which they own by definition.
+        // vote RPC) — a player can only ever request a grip through their own
+        // PlayerController, which they own by definition. Single toggle RPC (unlike the
+        // old CrateController's separate grab/throw pair) since loot has no throw —
+        // press E to grip the nearest ungripped item in range, press it again to release
+        // whatever this player is currently gripping.
         [ServerRpc]
-        private void RequestGrabServerRpc()
+        private void RequestToggleGripServerRpc()
         {
-            CrateController nearest = null;
-            var nearestDistSqr = CrateController.GrabRange * CrateController.GrabRange;
-            foreach (var crate in CrateController.ActiveServerCrates)
+            if (_grippedLootItemServer != null)
             {
-                if (crate.IsHeld)
-                {
-                    continue;
-                }
+                _grippedLootItemServer.ServerRemoveGripper(OwnerClientId);
+                _grippedLootItemServer = null;
+                _isGrippingLoot.Value = false;
+                return;
+            }
 
-                var toCrate = crate.transform.position - transform.position;
-                var distSqr = toCrate.sqrMagnitude;
+            LootItem nearest = null;
+            var gripRange = _lootSettings != null ? _lootSettings.GripRange : 2.5f;
+            var nearestDistSqr = gripRange * gripRange;
+            foreach (var item in LootItem.ActiveServerLootItems)
+            {
+                var toItem = item.transform.position - transform.position;
+                var distSqr = toItem.sqrMagnitude;
                 if (distSqr > nearestDistSqr)
                 {
                     continue;
                 }
 
                 // Roughly in front of the player, not something behind them they'd have
-                // no way of aiming away from.
-                if (Vector3.Dot(transform.forward, toCrate.normalized) < 0.3f)
+                // no way of aiming away from. Same gate CrateController's grab used.
+                if (Vector3.Dot(transform.forward, toItem.normalized) < 0.3f)
                 {
                     continue;
                 }
 
                 nearestDistSqr = distSqr;
-                nearest = crate;
+                nearest = item;
             }
 
-            nearest?.ServerGrab(OwnerClientId);
+            if (nearest == null)
+            {
+                return;
+            }
+
+            nearest.ServerAddGripper(OwnerClientId, this);
+            _grippedLootItemServer = nearest;
+            _isGrippingLoot.Value = true;
         }
 
+        // Milestone 4's "shove it off the edge" descent method — no-ops unless this
+        // player is already gripping something (a shove without a grip makes no sense;
+        // grip first via E, then shove via F). Direction is the player's own facing so a
+        // shove sends the item outward the way the player's actually facing at the table
+        // edge, not just straight down.
         [ServerRpc]
-        private void RequestThrowServerRpc(Vector3 releaseVelocity)
+        private void RequestShoveLootServerRpc()
         {
-            foreach (var crate in CrateController.ActiveServerCrates)
-            {
-                if (crate.OwnerClientId == OwnerClientId)
-                {
-                    crate.ServerRelease(releaseVelocity);
-                    break;
-                }
-            }
-        }
-
-        // CharacterController.Move() does not automatically push Rigidbodies it collides
-        // with — this is the hook Unity expects a script to implement for that. Server-only
-        // since the server's own SimulateMovement is what actually calls .Move() with
-        // authority; un-held crates are server-owned anyway, so this is the correct side to
-        // apply the push from. Held crates are excluded — pushing something someone's
-        // actively carrying would fight the hold-point following in CrateController.
-        private void OnControllerColliderHit(ControllerColliderHit hit)
-        {
-            if (!IsServer || hit.rigidbody == null)
+            if (_grippedLootItemServer == null)
             {
                 return;
             }
 
-            if (!hit.rigidbody.TryGetComponent<CrateController>(out var crate) || crate.IsHeld)
-            {
-                return;
-            }
-
-            var pushDirection = hit.moveDirection;
-            pushDirection.y = 0f;
-            if (pushDirection.sqrMagnitude < 0.0001f)
-            {
-                return;
-            }
-
-            hit.rigidbody.AddForce(pushDirection.normalized * PushForce, ForceMode.Impulse);
+            var item = _grippedLootItemServer;
+            _grippedLootItemServer = null;
+            _isGrippingLoot.Value = false;
+            item.ServerShove(transform.forward);
         }
 
         private static float SpeedMultiplierFor(PlayerPose pose) => pose switch
@@ -798,6 +1060,40 @@ namespace CubeArena.Shared
             if (!matchActive)
             {
                 _jumpRequested = false; // no queued jump carries over into the match starting
+            }
+
+            // Climbing takes over movement entirely for this tick — gravity/jump/normal
+            // horizontal movement are all skipped while it's active. Only reachable while
+            // the match is active (matchActive gates horizontalInput above; a Climbable
+            // in range during the lobby doesn't let a player start climbing before the
+            // host starts the match) and only while standing (crouch/crawl height changes
+            // and climbing don't need to interact for this milestone's scope).
+            var climbing = matchActive && effectivePose == PlayerPose.Standing && IsNearClimbable();
+            if (climbing != _isClimbing.Value)
+            {
+                Debug.Log($"[Climb] {DisplayName} climbing={climbing} y={transform.position.y:F2}");
+            }
+
+            // Milestone 2 diagnostic: periodic position trace so the climb-route
+            // verification is debuggable from the server log instead of guessing from
+            // bandwidth numbers alone. BotModeEnabled is a client-side-only static (each
+            // process has its own copy), unset on the server, so it can't gate this
+            // server-side log - unconditional instead, cheap at one line per ~2s per
+            // connected player.
+            if (Time.time - _lastPositionLogTime > 2f)
+            {
+                _lastPositionLogTime = Time.time;
+                Debug.Log($"[Pos] {DisplayName} pos={transform.position} climbing={_isClimbing.Value}");
+            }
+
+            _isClimbing.Value = climbing;
+
+            if (climbing)
+            {
+                _verticalVelocity = 0f; // no gravity carries over into a subsequent fall
+                _characterController.Move(ComputeClimbMove(horizontalInput, deltaTime));
+                _serverPosition.Value = transform.position;
+                return;
             }
 
             var grounded = _characterController.isGrounded;
@@ -916,6 +1212,60 @@ namespace CubeArena.Shared
             return true;
         }
 
+        // Climbing: a distinct movement mode (not a PlayerPose tier — it's about *how*
+        // the character moves, not how tall its collider is) for scaling the chair
+        // (docs/GAME_DESIGN.md section 3's "leg -> rung -> seat -> table edge" route).
+        // At this project's x25 world scale the existing jump (~1.1m apex, see
+        // MovementConstants.JumpSpeed/Gravity) can't reach anywhere near the 11.25m
+        // chair seat, let alone the 18.75m table top — a real vertical-traversal
+        // mechanic is needed, not just more/taller jump-steps like ArenaBuilder's
+        // BuildClimbableTower uses at native scale.
+        //
+        // Design: any collider carrying a Climbable component (Assets/Scripts/Shared/
+        // Climbable.cs — a plain marker, not a Unity tag/layer, see its own comment)
+        // within DetectionRange of the player enables climbing. While climbing,
+        // gravity is suspended and the *world-space* input already computed for normal
+        // movement (CameraRelativeXZ's output) is reprojected onto the player's own
+        // facing direction via a dot product, so pressing "forward" toward the surface
+        // being faced climbs up it and "back" climbs down — reusing the exact same
+        // input already sent every tick rather than adding a second input scheme/RPC.
+        private static readonly Collider[] ClimbOverlapBuffer = new Collider[8];
+
+        private bool IsNearClimbable()
+        {
+            var range = _climbSettings != null ? _climbSettings.DetectionRange : 1.2f;
+            var center = transform.position + Vector3.up * (_characterController.height * 0.5f);
+            var count = Physics.OverlapSphereNonAlloc(center, range, ClimbOverlapBuffer, ~0, QueryTriggerInteraction.Collide);
+            for (var i = 0; i < count; i++)
+            {
+                if (ClimbOverlapBuffer[i].GetComponentInParent<Climbable>() != null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // worldInput is the same world-space XZ vector normal movement uses (see
+        // CameraRelativeXZ) — dotted against facing so "press toward the surface" reads
+        // as climbing up it regardless of camera angle, without a second input scheme.
+        private Vector3 ComputeClimbMove(Vector2 worldInput, float deltaTime)
+        {
+            var climbSpeed = _climbSettings != null ? _climbSettings.ClimbSpeed : 3f;
+            var shiftSpeed = _climbSettings != null ? _climbSettings.HorizontalShiftSpeed : 1.5f;
+
+            var worldInput3 = new Vector3(worldInput.x, 0f, worldInput.y);
+            var forward = transform.forward;
+            var right = transform.right;
+
+            var verticalIntent = Vector3.Dot(worldInput3, forward);
+            var lateralIntent = Vector3.Dot(worldInput3, right);
+
+            return Vector3.up * (verticalIntent * climbSpeed * deltaTime)
+                   + right * (lateralIntent * shiftSpeed * deltaTime);
+        }
+
         private void ApplyColor(int slotIndex)
         {
             var color = PlayerColors.Get(slotIndex);
@@ -926,11 +1276,9 @@ namespace CubeArena.Shared
         }
 
         // Purely cosmetic, client-side only (the server never renders — see Update's
-        // !IsServer guard). Walk-cycle limb swing is driven by actual horizontal
-        // movement, which works identically for the owner's predicted position and
-        // remote players' interpolated one without needing any extra networked state.
-        // Crouch squashes the whole Visual wrapper — see CreateTemplate's comment on why
-        // it's a separate transform from the CharacterController's own collision shape.
+        // !IsServer guard). Vertical delta drives the airborne/jump heuristic the same
+        // way the pre-existing horizontal delta already drove walk detection — no new
+        // networked state needed (see UpdateLocomotionAnimation).
         private void AnimateVisuals()
         {
             if (_visual == null)
@@ -938,47 +1286,13 @@ namespace CubeArena.Shared
                 return;
             }
 
-            var delta = transform.position - _lastVisualPosition;
+            var rawDelta = transform.position - _lastVisualPosition;
             _lastVisualPosition = transform.position;
-            delta.y = 0f;
-            var horizontalSpeed = Time.deltaTime > 0f ? delta.magnitude / Time.deltaTime : 0f;
-            var isWalking = horizontalSpeed > 0.15f;
+            var verticalSpeed = Time.deltaTime > 0f ? rawDelta.y / Time.deltaTime : 0f;
+            rawDelta.y = 0f;
+            var horizontalSpeed = Time.deltaTime > 0f ? rawDelta.magnitude / Time.deltaTime : 0f;
 
-            if (isWalking)
-            {
-                _walkCyclePhase += horizontalSpeed * WalkSwingSpeed * Time.deltaTime;
-            }
-
-            var swing = isWalking ? Mathf.Sin(_walkCyclePhase) * MaxSwingAngleDeg : 0f;
-            SetLimbSwing(_legLeftPivot, swing);
-            SetLimbSwing(_legRightPivot, -swing);
-            SetLimbSwing(_armLeftPivot, -swing);
-            SetLimbSwing(_armRightPivot, swing);
-
-            // Snapped instantly, not lerped: ApplyPoseToController resizes the actual
-            // CharacterController collider instantly too, and letting this visual squash
-            // lag a fraction of a second behind it meant the head kept its full standing
-            // height for a moment right as the (already-shrunk) collider carried the
-            // player under a low roof — visually clipping through it even though the
-            // real collision shape was already clear. Matching them exactly removes that
-            // window entirely.
-            //
-            // Driven by the *effective* pose (what the collider actually achieved), not
-            // the raw requested _pose — otherwise releasing crouch while still under a
-            // low roof popped the model to standing height even though the collider
-            // (correctly) refused to grow, which is the "player needs to stay crouched
-            // until the collision ends" bug. The owner reads its own zero-latency local
-            // result; remote viewers read the replicated one.
-            var effectivePose = IsOwner && !IsServer ? _predictedEffectivePose : _effectivePose.Value;
-            var targetScaleY = effectivePose switch
-            {
-                PlayerPose.Crawling => CrawlVisualScaleY,
-                PlayerPose.Crouching => CrouchVisualScaleY,
-                _ => 1f,
-            };
-            var scale = _visual.localScale;
-            scale.y = targetScaleY;
-            _visual.localScale = scale;
+            UpdateLocomotionAnimation(horizontalSpeed, verticalSpeed);
 
             // Billboard: always face the viewer, same as most games' nameplates — a
             // World Space Canvas doesn't do this on its own.
@@ -988,15 +1302,98 @@ namespace CubeArena.Shared
             }
         }
 
-        private static void SetLimbSwing(Transform pivot, float targetAngleDeg)
+        // Drives the shared ThiefLocomotion AnimatorController purely via
+        // Animator.CrossFade(stateName, ...) — the controller has no built-in
+        // transition graph (see ThiefAnimatorBuilder), so this is the only thing
+        // deciding which state plays. Re-fades only when the target state actually
+        // changes (not every frame), so a held state isn't restarted repeatedly.
+        //
+        // Priority order: climbing > airborne/jump > pose-based idle/walk/sprint/
+        // crouch. Climbing and pose are read from the same owner-predicted-vs-
+        // replicated split the rest of the class already uses for movement (cosmetic
+        // lag here is imperceptible, unlike actual movement, so climbing itself is
+        // read straight from the replicated _isClimbing.Value on every instance,
+        // owner included, rather than adding a further predicted-climbing field).
+        // Airborne has no replicated state at all — see AnimateVisuals — inferred
+        // identically for the owner's predicted position and remote players'
+        // interpolated one.
+        private void UpdateLocomotionAnimation(float horizontalSpeed, float verticalSpeed)
         {
-            if (pivot == null)
+            if (_animator == null)
             {
                 return;
             }
 
-            pivot.localRotation = Quaternion.Slerp(
-                pivot.localRotation, Quaternion.Euler(targetAngleDeg, 0, 0), Time.deltaTime * PoseLerpSpeed);
+            var crossfade = _thiefAnimSettings != null ? _thiefAnimSettings.CrossfadeDuration : 0.15f;
+            var airborneThreshold = _thiefAnimSettings != null ? _thiefAnimSettings.AirborneVerticalThreshold : 1.5f;
+            var jumpStartDuration = _thiefAnimSettings != null ? _thiefAnimSettings.JumpStartDuration : 0.25f;
+            var jumpLandDuration = _thiefAnimSettings != null ? _thiefAnimSettings.JumpLandDuration : 0.2f;
+
+            var climbing = _isClimbing.Value;
+            var airborne = !climbing && Mathf.Abs(verticalSpeed) > airborneThreshold;
+
+            string targetState;
+            if (climbing)
+            {
+                // No dedicated climb clip in the Quaternius library (43 clips, see
+                // ThiefAnimatorBuilder) — Walk_Loop reused as a "limbs are moving"
+                // visual cue. The actual vertical motion comes from ComputeClimbMove,
+                // not from this clip (applyRootMotion is off). See docs/DECISIONS.md.
+                targetState = "Walk_Loop";
+                _airborneElapsed = 0f;
+                _landStateElapsed = -1f;
+            }
+            else if (_landStateElapsed >= 0f)
+            {
+                _landStateElapsed += Time.deltaTime;
+                targetState = "Jump_Land";
+                if (_landStateElapsed >= jumpLandDuration)
+                {
+                    _landStateElapsed = -1f;
+                }
+            }
+            else if (airborne)
+            {
+                _airborneElapsed += Time.deltaTime;
+                targetState = _airborneElapsed < jumpStartDuration && verticalSpeed > 0f ? "Jump_Start" : "Jump_Loop";
+            }
+            else if (_wasAirborne)
+            {
+                _landStateElapsed = 0f;
+                targetState = "Jump_Land";
+            }
+            else
+            {
+                _airborneElapsed = 0f;
+
+                // Driven by the *effective* pose (what the collider actually achieved),
+                // not the raw requested _pose — see _effectivePose's own declaration for
+                // why (releasing crouch under a low roof must keep reading as crouched
+                // until the collider can actually grow). Owner reads its own zero-latency
+                // local result; remote viewers read the replicated one.
+                var effectivePose = IsOwner && !IsServer ? _predictedEffectivePose : _effectivePose.Value;
+                var moving = horizontalSpeed > WalkDetectSpeed;
+                if (effectivePose == PlayerPose.Standing)
+                {
+                    targetState = moving ? (_sprintHeld.Value ? "Sprint_Loop" : "Walk_Loop") : "Idle_Loop";
+                }
+                else
+                {
+                    // Crouching and Crawling share the same two clips — no dedicated
+                    // crawl/prone clip exists in the library either. The collider height
+                    // (what actually matters for fitting under the crawl tunnels) is
+                    // unaffected either way. See docs/DECISIONS.md.
+                    targetState = moving ? "Crouch_Fwd_Loop" : "Crouch_Idle_Loop";
+                }
+            }
+
+            _wasAirborne = airborne;
+
+            if (targetState != _currentAnimState)
+            {
+                _currentAnimState = targetState;
+                _animator.CrossFade(targetState, crossfade);
+            }
         }
 
         // This template is built 100% at runtime (CLAUDE.md forbids hand-edited prefab
@@ -1034,6 +1431,12 @@ namespace CubeArena.Shared
             typeof(NetworkObject).GetField("GlobalObjectIdHash", BindingFlags.NonPublic | BindingFlags.Instance);
         private static readonly Vector3 TemplateParkPosition = new(0f, -1000f, 0f);
 
+        // Resources.Load names — see ThiefAnimatorBuilder for how ThiefLocomotion is
+        // built, and docs/ASSETS.md "Placeholder character structure" for
+        // ThiefModel_Placeholder's swappable-mesh wrapper design.
+        private const string ThiefModelResourceName = "ThiefModel_Placeholder";
+        private const string ThiefControllerResourceName = "ThiefLocomotion";
+
         public static GameObject CreateTemplate()
         {
             var root = new GameObject("Player");
@@ -1046,25 +1449,42 @@ namespace CubeArena.Shared
             controller.radius = 0.35f;
             controller.center = new Vector3(0, StandingControllerHeight / 2f, 0);
 
-            // All visible geometry lives under "Visual" so a crouch/crawl can squash just
-            // this wrapper (AnimateVisuals scales it on Y) without touching the
-            // CharacterController's own collision shape, which ApplyPoseToController
-            // resizes directly and separately.
+            // All visible geometry lives under "Visual" so it stays a separate
+            // transform from the CharacterController's own collision shape, which
+            // ApplyPoseToController resizes directly.
             var visual = new GameObject("Visual");
             visual.transform.SetParent(root.transform, false);
 
-            // Blocky humanoid (torso/head/arms/legs) instead of a plain 2-cube stack —
-            // still built entirely from Cube primitives (CLAUDE.md: no mesh/prefab
-            // assets), just with human-like proportions instead of a "totem pole" look.
-            // Arms/legs are a pivot-at-the-joint + a cube hanging from it (CreateLimb),
-            // so AnimateVisuals' walk-cycle swing rotates them naturally from the
-            // shoulder/hip instead of spinning the cube around its own center.
-            CreateBodyPart(visual.transform, "Torso", new Vector3(0, 1.25f, 0), new Vector3(0.5f, 0.7f, 0.3f));
-            CreateBodyPart(visual.transform, "Head", new Vector3(0, 1.775f, 0), new Vector3(0.35f, 0.35f, 0.35f));
-            CreateLimb(visual.transform, "ArmLeft", new Vector3(-0.45f, 1.575f, 0), new Vector3(0.2f, 0.65f, 0.2f));
-            CreateLimb(visual.transform, "ArmRight", new Vector3(0.45f, 1.575f, 0), new Vector3(0.2f, 0.65f, 0.2f));
-            CreateLimb(visual.transform, "LegLeft", new Vector3(-0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
-            CreateLimb(visual.transform, "LegRight", new Vector3(0.15f, 0.9f, 0), new Vector3(0.25f, 0.9f, 0.25f));
+            // Real placeholder mesh (Quaternius Superhero, Humanoid-rigged) — replaces
+            // the earlier blocky-cube-primitive body now that CLAUDE.md allows imported
+            // prefabs (see docs/DECISIONS.md). Ground-rooted (localPosition zero) since
+            // the Humanoid rig's own root is feet-at-origin, the same convention
+            // SleepPreviewBuilder's giant stations use. Per-slot recolouring needs no
+            // special handling here — ApplyColor/_renderers below already generalizes
+            // over whatever Renderers exist under root, cube or skinned mesh alike.
+            var modelPrefab = Resources.Load<GameObject>(ThiefModelResourceName);
+            if (modelPrefab != null)
+            {
+                var modelInstance = Instantiate(modelPrefab, visual.transform);
+                modelInstance.transform.localPosition = Vector3.zero;
+                modelInstance.transform.localRotation = Quaternion.identity;
+
+                var animator = modelInstance.GetComponentInChildren<Animator>();
+                if (animator != null)
+                {
+                    animator.runtimeAnimatorController = Resources.Load<RuntimeAnimatorController>(ThiefControllerResourceName);
+                    animator.applyRootMotion = false;
+                }
+                else
+                {
+                    Debug.LogWarning($"{ThiefModelResourceName} has no Animator — thief will be visible but won't animate.");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"{ThiefModelResourceName} not found in Resources — thief will have no visible mesh. " +
+                                  "Run PocketHeist.EditorTools.SleepPreviewBuilder.Build to regenerate it.");
+            }
 
             CreateNameplate(root.transform);
 
@@ -1072,10 +1492,9 @@ namespace CubeArena.Shared
             return root;
         }
 
-        // A sibling of Visual, not a child of it, so the crouch squash (AnimateVisuals
-        // scales Visual on Y) doesn't shrink or drop the nameplate — it stays at a fixed
-        // height above the standing model either way. World Space Canvas doesn't
-        // auto-face the camera, so AnimateVisuals rotates it manually each frame.
+        // A sibling of Visual, not a child of it, so it stays at a fixed height above
+        // the model regardless of pose. World Space Canvas doesn't auto-face the
+        // camera, so AnimateVisuals rotates it manually each frame.
         private static void CreateNameplate(Transform parent)
         {
             var nameplateGo = new GameObject("Nameplate", typeof(Canvas));
@@ -1105,36 +1524,5 @@ namespace CubeArena.Shared
             text.verticalOverflow = VerticalWrapMode.Overflow;
         }
 
-        private static void CreateBodyPart(Transform parent, string name, Vector3 localPosition, Vector3 localScale)
-        {
-            var part = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            part.name = name;
-            part.transform.SetParent(parent, false);
-            part.transform.localPosition = localPosition;
-            part.transform.localScale = localScale;
-            // Collision is handled entirely by the CharacterController above — per-part
-            // colliders would just fight it, so they're removed like Body/Head were before.
-            UnityEngine.Object.Destroy(part.GetComponent<Collider>());
-            MaterialUtil.ApplyLitColor(part.GetComponent<Renderer>(), Color.white);
-        }
-
-        // A pivot at the joint (shoulder/hip) with the visible cube hanging down from
-        // it — rotating the returned pivot swings the limb from the joint instead of
-        // spinning the cube around its own center. The pivot keeps the limb's name
-        // (e.g. "ArmLeft") so Awake's transform.Find calls still resolve it directly.
-        private static void CreateLimb(Transform parent, string name, Vector3 pivotLocalPosition, Vector3 size)
-        {
-            var pivot = new GameObject(name);
-            pivot.transform.SetParent(parent, false);
-            pivot.transform.localPosition = pivotLocalPosition;
-
-            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            cube.name = name + "Cube";
-            cube.transform.SetParent(pivot.transform, false);
-            cube.transform.localPosition = new Vector3(0, -size.y / 2f, 0);
-            cube.transform.localScale = size;
-            UnityEngine.Object.Destroy(cube.GetComponent<Collider>());
-            MaterialUtil.ApplyLitColor(cube.GetComponent<Renderer>(), Color.white);
-        }
     }
 }

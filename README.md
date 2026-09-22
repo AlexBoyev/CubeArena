@@ -1,39 +1,81 @@
-# Cube Arena
+# Pocket Heist
 
-A 6-player multiplayer prototype built to exercise real infrastructure —
-authoritative netcode, custom auth, signed connect tickets, and a real
-dedicated-server fleet — with deliberately minimal gameplay on top. See
-`CUBE_ARENA_PROMPT.md` for the original brief this project follows.
+*(formerly Cube Arena — see [Project history](#project-history))*
 
-**The plumbing is the deliverable, not the game.** Combat, scoring, chat,
-and persistence of match results are explicitly out of scope.
+A 2-6 player co-op stealth heist: a crew of thumb-sized thieves sneaks into
+a sleeping giant's kitchen, one night per run. Heavy loot needs several
+thieves carrying it together, and teamwork makes noise — noise wakes the
+giant. Built on real multiplayer infrastructure carried over from this
+project's original prototype: authoritative netcode, custom auth, signed
+connect tickets, and a real dedicated-server fleet.
+
+See [`POCKET_HEIST_MASTER_PROMPT.md`](POCKET_HEIST_MASTER_PROMPT.md) for
+the full pivot brief and [`docs/GAME_DESIGN.md`](docs/GAME_DESIGN.md) for
+the living design reference (core loop, world scale, carry mechanics,
+noise model, the giant's state machine).
 
 ## Contents
 
-- [What it is](#what-it-is)
+- [The idea](#the-idea)
+- [Project status](#project-status)
 - [Architecture](#architecture)
 - [Design decisions worth knowing](#design-decisions-worth-knowing)
-- [Gameplay](#gameplay)
 - [Repo layout](#repo-layout)
 - [How to run it](#how-to-run-it)
-- [How to play](#how-to-play)
 - [Testing](#testing)
+- [Project history](#project-history)
 - [Further reading](#further-reading)
 
-## What it is
+## The idea
 
-Up to six players register an account, log in, and click "Quick Play." The
-backend finds (or spins up) a session with a free slot, issues each player
-a short-lived signed ticket, and hands back the address of a real dedicated
-game server process. The client connects to that server over UDP; the
-server is the sole authority over every player's position. Players see each
-other as coloured cubes (one of six colours, one per slot) moving around a
-small arena, with a minimap in the corner and pushable/grabbable/throwable
-physics crates scattered around for good measure.
+**Core loop**: sneak in through a mousehole → find loot on/under the
+kitchen table → carry it back to the mousehole → bank it as a team →
+(later) spend earnings on gear → next night, a harder house.
+
+- **World scale is ×25.** The giant's kitchen is built at real-world size;
+  the thieves and everything they carry stay at native scale, so ordinary
+  household objects — a chair, a table leg, a coin — read as genuinely
+  enormous obstacles and payloads.
+- **Loot needs multiple carriers.** Each item has a required carrier count;
+  understaffed, it can only be dragged slowly and loudly. At full strength
+  it moves at normal speed. Carrying is server-authoritative — the group
+  moves as one, the server averages each carrier's input.
+- **Noise wakes the giant.** A single server-side noise value drives his
+  state machine: Asleep → Stirring (twitches, swats at nearby thieves) →
+  Awake (phone-light search cone, catches anyone it holds on for 1.5s). A
+  caught thief is trapped under an upturned glass until two free teammates
+  tip it to free them.
+- **The night ends at dawn** (or when everyone's caught) — unbanked loot is
+  lost, banked loot counts toward the results screen.
 
 There is no host-client mode anywhere in this project — even for local
-development, a separate headless server process is what every client
-actually connects to.
+development, a separate headless dedicated-server process is what every
+client actually connects to; that hasn't changed from the original
+prototype.
+
+## Project status
+
+Actively mid-build, in milestones, on the `pocket-heist` branch (merged to
+`master` only once the full playable loop is done — see
+[`AUTONOMOUS_RUN.md`](AUTONOMOUS_RUN.md) for the current build-out plan and
+[`docs/PROGRESS.md`](docs/PROGRESS.md) for exactly what's done, what's next,
+and known issues, kept up to date as the single source of truth for where
+this stands right now).
+
+| # | Milestone | Status |
+|---|---|---|
+| 1 | Asset import, placeholder characters, sleep pose | ✅ done |
+| 2 | Kitchen greybox at scale, climbing mechanic, animated thief prefab | ✅ done |
+| 3 | The coin test: 2-player carry, banking, team total | 🔧 in progress |
+| 4 | Real kitchen assets, lighting pass, full loot set, all descent methods | ⏳ not started |
+| 5 | Noise model, noise HUD, giant states and tells | ⏳ not started |
+| 6 | Giant animations, catch/rescue, night timer, dawn, results screen | ⏳ not started |
+| 7 | Proximity voice (evaluated separately, out of scope for now) | ⏳ not started |
+
+Every design or technical trade-off made along the way is logged, with
+reasoning, in [`docs/DECISIONS.md`](docs/DECISIONS.md); a manual playtest
+checklist per finished milestone lives in
+[`docs/PLAYTEST.md`](docs/PLAYTEST.md).
 
 ## Architecture
 
@@ -68,7 +110,9 @@ Key property: **the client never talks to the database or holds any
 signing key.** The game server never talks to the database and never holds
 the private signing key — only the public JWKS material, fetched once at
 boot. Full component diagram, sequence diagram, and threat model:
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). This whole layer — auth,
+sessions, fleet, tickets — is unchanged by the Pocket Heist pivot; only the
+gameplay built on top of it changed.
 
 ### Backend API surface
 
@@ -93,19 +137,21 @@ boot. Full component diagram, sequence diagram, and threat model:
   60-second expiry — verified entirely offline by the game server in
   `ConnectionApprovalCallback`, no round-trip to the backend needed per
   connection.
-- **Movement is server-authoritative.** The client sends input intent only
-  (a direction vector); the server simulates at a fixed 30Hz tick and
-  writes the result to a server-owned `NetworkVariable`. The owning client
-  predicts locally and soft-blends toward server truth to stay responsive
-  without a full input-replay buffer — see
-  [`docs/NETCODE.md`](docs/NETCODE.md) for exactly what was built and why
-  a fuller reconciliation scheme wasn't needed here.
-- **Physics crates use NGO's built-in `NetworkTransform`/`NetworkRigidbody`**
-  instead of the hand-rolled `NetworkVariable` pattern above — the one
-  deliberate exception. Authority moves by changing *who owns the crate*
-  (the server at rest, the holding player while carried) rather than by
-  toggling any sync mode at runtime. Full writeup, including a load-test
-  bandwidth measurement, in [`docs/NETCODE.md`](docs/NETCODE.md).
+- **Player movement is server-authoritative,** hand-rolled rather than
+  NGO's built-in `NetworkTransform`. The client sends input intent only; the
+  server simulates at a fixed 30Hz tick and writes the result to a
+  server-owned `NetworkVariable`. The owning client predicts locally and
+  soft-blends toward server truth to stay responsive without a full
+  input-replay buffer. Climbing (new for Pocket Heist) is a distinct
+  movement mode on top of the same pipeline — gated by proximity to a
+  `Climbable` marker, with no new input scheme. See
+  [`docs/NETCODE.md`](docs/NETCODE.md).
+- **Loot uses NGO's built-in `NetworkTransform`/`NetworkRigidbody`**
+  instead of the hand-rolled pattern above — rigidbody state is meaningfully
+  harder to hand-roll well than the simple kinematic player pose. Authority
+  stays permanently server-side (unlike single-player-owned physics props),
+  so 2-5 simultaneous carriers can grip the same item at once — full
+  writeup in [`docs/NETCODE.md`](docs/NETCODE.md).
 - **Crypto note (a real platform finding, not a design choice):**
   `System.Security.Cryptography`'s ECDsa/RSA APIs are non-functional on
   Unity's Mono runtime in a built player. Ticket verification on the game
@@ -113,70 +159,39 @@ boot. Full component diagram, sequence diagram, and threat model:
   findings before touching crypto or NGO connection code.
 - **Netcode for GameObjects 2.13.2**, not 1.x — NGO 1.x doesn't compile
   against this Unity version.
-- **Everything is built from code at runtime** (arena, player cubes, all
-  UI) — there are no scene-authored GameObjects or hand-edited
-  `.prefab`/`.unity` files. See `CLAUDE.md`.
+- **Imported assets, prefabs, and scenes are allowed and expected** (a
+  deliberate reversal from the original prototype's "everything built from
+  code" rule, made for this pivot — see `CLAUDE.md`). Hand-editing
+  `.unity`/`.prefab`/`.meta` files directly is still never allowed; Unity's
+  own Editor/APIs own those files.
+- **World scale is fixed at ×25** for the environment and the giant;
+  thieves and loot physics stay at native scale so Unity physics behaves
+  sensibly. See `docs/GAME_DESIGN.md` section 2 for the full conversion
+  table.
 - **Persistence is Postgres everywhere** (dev and prod), a deliberate
   simplification from the original brief's "SQLite for local dev," for
   dev/prod parity.
 
-## Gameplay
-
-Built up iteratively past the original minimal brief — still no combat, no
-chat, no persistence of match results across sessions, but there's a real
-objective now:
-
-- **Arena**: a 40x40 flat plane with a boundary wall, an obstacle course
-  (a crouch tunnel, a climbable tower, a jump gap, a balance beam, two
-  houses with interior stairs to a loft, and two crawl tunnels), gold
-  pickups that respawn on collection, and physics crates (8 by default)
-  players can push into, grab, carry, and throw.
-- **Character**: a blocky humanoid (torso/head/arms/legs, all primitive
-  cubes) with a walk-cycle limb swing and a nameplate showing the player's
-  chosen display name.
-- **Colours**: six fixed slots — red, blue, green, yellow, purple, orange —
-  assigned by the server from the connect ticket's `slot` claim.
-- **Movement**: WASD at 5 m/s, server-authoritative at a 30Hz tick with
-  client-side prediction/reconciliation. Space to jump, Ctrl to crouch
-  (fits under low obstacles), C to crawl (for the lowest tunnels — crouch
-  alone doesn't clear them), Shift to sprint (1.6x speed, gated by a mana
-  resource that drains while sprinting and locks out once empty until it
-  recovers to 30%). E grabs the nearest crate in front of you (or throws
-  the one you're holding) — walking into a crate you're not holding pushes
-  it instead.
-  Esc pauses locally (freezes only your own input/camera — the match keeps
-  running for everyone else) and opens Options/Leave from a single menu.
-- **Lobby**: players spawn in and can look around immediately, but movement
-  and pickups are frozen until whoever's been connected longest ("the
-  host") clicks Start Match — a shown-to-everyone lobby panel tracks how
-  many are connected.
-- **Scoring**: collect gold pickups for points, shown on a live scoreboard;
-  a 5-minute match clock (only running once the lobby's Start Match has
-  been clicked) ends the round, announces a winner, and returns everyone to
-  a fresh lobby.
-- **Minimap**: a top-down orthographic camera rendering the real arena to
-  a `RenderTexture`, shown in a HUD corner — player cubes naturally appear
-  as coloured dots from directly above.
-- **Disconnect / rejoin**: a graceful leave, a timeout, or a clean
-  process exit all release your slot after a short grace period; a
-  rejoin within that window returns you to the same session and slot. The
-  game server also declares a connection dead after 5s of inactivity
-  (`DisconnectTimeoutMS`), not UTP's 30s default, so a crashed/force-killed
-  client's player object doesn't linger on-screen for everyone else.
-
 ## Repo layout
 
 ```
-CubeArena/                      # repo root == Unity project root
+CubeArena/                      # repo root == Unity project root (name predates the pivot)
   Assets/
     Scripts/
-      Shared/                   # netcode messages, constants, colours,
-                                 # CrateController (NGO NetworkTransform/
-                                 # NetworkRigidbody physics props)
-      Client/                   # login UI, connect flow, movement client-side,
-                                 # scripted bot mode for load testing
+      Shared/                   # netcode messages, constants, colours
+        PlayerController.cs     # movement, climbing, animation state, replication
+        KitchenBuilder.cs       # "The Midnight Snacker" level greybox at x25 scale
+        LootItem.cs             # server-authoritative multi-carrier loot (Milestone 3)
+        MatchManager.cs         # match clock / team loot total
+        Climbable.cs            # marker component for climbable surfaces
+        SurfaceType.cs          # tile/rug tags for the noise model (Milestone 5)
+        Tuning/                 # ScriptableObject tunables (climb, loot, animation)
+      Client/                   # login UI, connect flow, HUD, scripted bot mode for testing
       Server/                   # ServerBootstrap, ticket validation, fleet client
+    Editor/PocketHeist/         # batch-mode build/asset-generation tooling
     Editor/BuildScript.cs       # batch-mode build entry points
+    ThirdParty/                 # imported CC0 asset packs — see docs/ASSETS.md
+    Resources/                  # runtime-loaded prefabs and generated ScriptableObject assets
   Packages/
   ProjectSettings/
   backend/
@@ -191,10 +206,17 @@ CubeArena/                      # repo root == Unity project root
     compose/                    # docker-compose.yml, .env, Tier 0 LAN scripts
   .github/workflows/
   docs/
+    GAME_DESIGN.md              # Pocket Heist's living design reference
+    PROGRESS.md                 # current milestone, what's done/next, known issues
+    DECISIONS.md                # every design/technical trade-off made, with reasoning
+    PLAYTEST.md                 # manual playtest checklist per milestone
+    ASSETS.md                   # every imported asset pack, licence, and where it's used
     ARCHITECTURE.md             # component diagram, token/session sequence, threat model
-    ROADMAP.md                  # phase-by-phase build history and scope notes
-    NETCODE.md                  # prediction/reconciliation design
+    ROADMAP.md                  # original prototype's phase-by-phase build history
+    NETCODE.md                  # prediction/reconciliation + loot-authority design
     HOSTING.md                  # all four hosting tiers, with runbooks
+  POCKET_HEIST_MASTER_PROMPT.md # the pivot brief this project follows
+  CUBE_ARENA_PROMPT.md          # original brief, kept as historical record
   SECURITY.md
 ```
 
@@ -240,62 +262,74 @@ plain router port forwarding (zero installs for players, but the backend
 port becomes reachable by the open internet while it's up — `docs/HOSTING.md`
 covers exactly what that does and doesn't expose).
 
-Tier 2 (a real internet-reachable deploy on a cloud VM, once the game is
-worth deploying that far) and Tier 3 (managed/scaling sketch) are also
-documented in `docs/HOSTING.md`, with a full copy-pasteable VM runbook for
-Tier 2.
+Tier 2 (a real internet-reachable deploy on a cloud VM) and Tier 3
+(managed/scaling sketch) are also documented in `docs/HOSTING.md`, with a
+full copy-pasteable VM runbook for Tier 2.
 
-## How to play
-
-1. Get the client (`Builds/CubeArena-Client.zip` from whoever's hosting, or
-   build it yourself — see above).
-2. Run `CubeArena.exe`.
-3. On the login screen, paste the host's server address into the **"server
-   address"** field (defaults to `http://localhost:8080` if left blank).
-4. **Register** an account (any email/password), then **Log in**.
-5. Pick a display name and click **Quick Play** — you'll land in a lobby
-   showing how many players are connected.
-6. Whoever's been connected longest is the host and sees a **Start Match**
-   button; everyone else waits until they click it. WASD to move, Space to
-   jump, Ctrl to crouch, C to crawl, Shift to sprint, E to grab/throw a
-   crate, Esc to pause. Collect gold pickups for points before the
-   5-minute clock runs out. **Leave** (in the Esc menu) returns you to
-   character select and frees your slot after a short grace period.
+The full playable heist loop (giant AI, catch/rescue, night timer, results
+screen) isn't finished yet — see [Project status](#project-status). What
+runs today is the kitchen level, movement, climbing, and (as Milestone 3
+lands) the first loot/carry/banking loop.
 
 ## Testing
 
-- **Backend**: 59 unit + integration tests (`dotnet test backend/CubeArena.sln`)
-  — token issuance/validation/expiry/rotation/reuse-detection, session
-  allocation, ticket verification rejection paths (expired, wrong session,
-  replayed `jti`, server full at both 4 and 6 capacity), fleet
+- **Backend**: unit + integration tests (`dotnet test backend/CubeArena.sln`,
+  59 passing as of Milestone 2) — token issuance/validation/expiry/rotation/
+  reuse-detection, session allocation, ticket verification rejection paths
+  (expired, wrong session, replayed `jti`, server full), fleet
   registration/heartbeat, confirm/release. Integration tests run against a
   real Postgres via Testcontainers; unit tests use EF Core InMemory + a
-  fake time provider for deterministic expiry testing.
-- **Client/netcode**: verified via live multi-client testing (documented in
-  `docs/ROADMAP.md`'s per-phase notes) — real built clients and a real
-  dedicated server, not simulated. The crate physics layer was additionally
-  load-tested with 6 scripted bot clients pushing/grabbing/throwing 30
-  crates at once (`CUBEARENA_BOT_MODE`, see `docs/NETCODE.md`), used to
-  measure real per-client bandwidth rather than eyeballing it.
+  fake time provider for deterministic expiry testing. Re-verified green
+  after every milestone.
+- **Client/netcode**: verified via live multi-client testing — real built
+  clients and a real dedicated server, not simulated, including scripted
+  headless bot clients (`CUBEARENA_BOT_MODE`) that walk real routes (e.g.
+  the mousehole → chair → table climb route) so new mechanics get a real
+  server-log trace, not just a compile check. Visual/animation changes are
+  additionally verified with real Play-mode screenshots from a live client,
+  inspected directly. See `docs/PROGRESS.md` for the verification evidence
+  behind each finished milestone.
 - CI: `.github/workflows/backend.yml` (build, test, image push to GHCR),
   `gameserver.yml` (GameCI Linux dedicated-server build, image push —
   skips cleanly rather than failing if `UNITY_LICENSE` isn't configured),
   `secret-scan.yml` (gitleaks).
 
+## Project history
+
+This repo started as **Cube Arena**, a 6-player multiplayer prototype built
+to exercise real infrastructure — authoritative netcode, custom auth,
+signed connect tickets, a real dedicated-server fleet — with deliberately
+minimal gameplay on top (coloured cubes, an obstacle course, gold pickups).
+`CUBE_ARENA_PROMPT.md` is kept as the original brief, a historical record
+of that prototype. Once the infrastructure was solid, the project pivoted
+to a real game built on it: **Pocket Heist**. The backend, auth, ticketing,
+fleet, and hosting layers carried over unchanged; the gameplay layer is
+being replaced piece by piece — see `docs/GAME_DESIGN.md` section 11's
+replace/reuse/remove table for exactly what stayed, what got retuned, and
+what's being deleted.
+
 ## Further reading
 
+- [`docs/GAME_DESIGN.md`](docs/GAME_DESIGN.md) — Pocket Heist's living
+  design reference: core loop, world scale, carry mechanics, noise model,
+  the giant's state machine, lighting direction.
+- [`docs/PROGRESS.md`](docs/PROGRESS.md) — current milestone, what's done,
+  what's next, known issues. The single source of truth for build status.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — every design/technical
+  trade-off made along the way, with reasoning.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — component diagram, full
   token/session sequence diagram, threat model, explicit out-of-scope list.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — phase-by-phase history, including
-  every deliberate simplification and platform-compatibility finding made
-  along the way.
 - [`docs/NETCODE.md`](docs/NETCODE.md) — the prediction/reconciliation
-  design in detail.
+  design and the multi-carrier loot authority model, in detail.
 - [`docs/HOSTING.md`](docs/HOSTING.md) — all four hosting tiers, with
   concrete runbooks.
+- [`docs/ASSETS.md`](docs/ASSETS.md) — every imported asset pack, licence,
+  source, and where it's used.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the original Cube Arena
+  prototype's phase-by-phase build history.
 - [`SECURITY.md`](SECURITY.md) — identity/password handling, token and
   ticket design, fleet trust model, rate limiting, what's deliberately out
   of scope, and the `LAN_MODE` trust boundary.
 - [`CLAUDE.md`](CLAUDE.md) — project conventions and hard rules (no
-  host-client mode, no secrets in the client, code-built UI/arena, never
-  hand-edit `.unity`/`.prefab`/`.meta` files).
+  host-client mode, no secrets in the client, imported assets allowed but
+  never hand-edited, world scale ×25).

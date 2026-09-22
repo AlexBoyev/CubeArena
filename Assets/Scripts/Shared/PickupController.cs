@@ -69,11 +69,21 @@ namespace CubeArena.Shared
 
         public static Vector3 GetRandomPosition()
         {
-            var half = MovementConstants.ArenaHalfExtent - 3f; // margin from the walls
+            // Kitchen floor bounds (KitchenBuilder.FloorWidth/FloorDepth), not the old
+            // Cube Arena's centered ArenaHalfExtent square - left over from before the
+            // kitchen replaced the arena, this used to spawn things in a tiny ~17x17
+            // region that no longer bears any relation to the actual (much larger,
+            // not-centered-the-same-way) kitchen floor. Not currently called (crate/
+            // pickup spawning is disabled in ServerBootstrap pending Milestone 3's loot
+            // redesign - see docs/PROGRESS.md), fixed anyway so it's correct whenever
+            // something does call it again.
+            const float margin = 3f;
+            var halfX = KitchenBuilder.FloorWidth / 2f - margin;
+            var halfZ = KitchenBuilder.FloorDepth / 2f - margin;
             for (var attempt = 0; attempt < MaxSpawnAttempts; attempt++)
             {
-                var x = Random.Range(-half, half);
-                var z = Random.Range(-half, half);
+                var x = Random.Range(-halfX, halfX);
+                var z = Random.Range(-halfZ, halfZ);
                 var candidate = new Vector3(x, 0f, z);
                 if (!Physics.CheckSphere(candidate + Vector3.up * 0.5f, SpawnClearanceRadius, ~0, QueryTriggerInteraction.Ignore))
                 {
@@ -83,7 +93,7 @@ namespace CubeArena.Shared
 
             // Exhausted every attempt (arena is unexpectedly crowded) — fall back to a
             // plain random point rather than looping forever.
-            return new Vector3(Random.Range(-half, half), 0f, Random.Range(-half, half));
+            return new Vector3(Random.Range(-halfX, halfX), 0f, Random.Range(-halfZ, halfZ));
         }
 
         // Same runtime-prefab requirements as PlayerController.CreateTemplate.

@@ -33,14 +33,23 @@ namespace CubeArena.Server
         private FleetClient _fleet;
         private NetworkManager _networkManager;
         private GameObject _pickupTemplate;
-        private GameObject _crateTemplate;
-        private int _crateCount;
+        private GameObject _lootItemTemplate;
         private MatchManager _matchManager;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoBootstrap()
         {
 #if UNITY_SERVER
+            // Real builds only ever include BootConfig.BootSceneName (see
+            // Editor/BuildScript.cs), so this check is a no-op there — it only
+            // matters in the Editor, where opening any other scene (a preview/
+            // test scene) must play normally instead of also standing up the
+            // whole dedicated server on top of it.
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != BootConfig.BootSceneName)
+            {
+                return;
+            }
+
             var go = new GameObject(nameof(ServerBootstrap));
             DontDestroyOnLoad(go);
             go.AddComponent<ServerBootstrap>();
@@ -56,13 +65,12 @@ namespace CubeArena.Server
         {
             Time.fixedDeltaTime = 1f / MovementConstants.ServerTickRate;
 
-            ArenaBuilder.Build();
+            KitchenBuilder.Build();
 
             var playerTemplate = PlayerController.CreateTemplate();
             _pickupTemplate = PickupController.CreateTemplate();
-            _crateTemplate = CrateController.CreateTemplate();
+            _lootItemTemplate = LootItem.CreateTemplate();
             var matchManagerTemplate = MatchManager.CreateTemplate();
-            _crateCount = config.CrateCount;
 
             var networkManager = GetComponent<NetworkManager>() ?? gameObject.AddComponent<NetworkManager>();
             _networkManager = networkManager;
@@ -91,7 +99,7 @@ namespace CubeArena.Server
             networkManager.NetworkConfig.EnableSceneManagement = false;
             networkManager.AddNetworkPrefab(playerTemplate);
             networkManager.AddNetworkPrefab(_pickupTemplate);
-            networkManager.AddNetworkPrefab(_crateTemplate);
+            networkManager.AddNetworkPrefab(_lootItemTemplate);
             networkManager.AddNetworkPrefab(matchManagerTemplate);
 
             transport.SetConnectionData(config.AdvertiseHost, config.ListenPort, listenAddress: "0.0.0.0");
@@ -170,8 +178,23 @@ namespace CubeArena.Server
             _matchManager.MatchEnded += () => EndMatch(BuildMatchEndReason());
             _matchManager.VoteEndTriggered += () => EndMatch(BuildVoteEndReason());
 
-            SpawnPickups();
-            SpawnCrates();
+            // Gold pickups are Cube Arena gameplay this run is replacing (docs/
+            // GAME_DESIGN.md section 11) - not spawned in the kitchen. Left callable
+            // (not deleted) rather than ripped out: PickupController's underlying tech
+            // (network prefab template pattern) is generic enough it isn't worth
+            // duplicating, and full removal of the dead pickup-scoring gameplay itself is
+            // deferred to whenever Cube Arena's remaining dead code gets swept, per
+            // docs/DECISIONS.md.
+            // SpawnPickups();
+
+            // Milestone 4: the full loot set, per POCKET_HEIST_MASTER_PROMPT.md section
+            // 6's loot table (Milestone 3 shipped just the floor coin as "the coin test").
+            SpawnLootItem(KitchenBuilder.LootCoinSpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.WalletCoin1SpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.WalletCoin2SpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.WalletCoin3SpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.RingSpawnPosition, 3, 50, LootItem.LootKind.Ring);
+            SpawnLootItem(KitchenBuilder.WristwatchSpawnPosition, 5, 120, LootItem.LootKind.Wristwatch);
         }
 
         private void OnApplicationQuit()
@@ -180,17 +203,12 @@ namespace CubeArena.Server
         }
 
         // Same shape as SpawnPickups — one shared template/hash, Instantiate +
-        // ServerInitialize + Spawn in a loop. _crateCount defaults to a gameplay-sane
-        // number but is set to 30 for the physics-bandwidth load test (see
-        // docs/NETCODE.md) via CUBEARENA_CRATE_COUNT, no rebuild needed.
-        private void SpawnCrates()
+        // ServerInitialize + Spawn, called once per item in section 6's loot table.
+        private void SpawnLootItem(Vector3 position, int requiredCarriers, int value, LootItem.LootKind kind)
         {
-            for (var i = 0; i < _crateCount; i++)
-            {
-                var instance = UnityEngine.Object.Instantiate(_crateTemplate);
-                instance.GetComponent<CrateController>().ServerInitialize(PickupController.GetRandomPosition());
-                instance.GetComponent<NetworkObject>().Spawn();
-            }
+            var instance = UnityEngine.Object.Instantiate(_lootItemTemplate);
+            instance.GetComponent<LootItem>().ServerInitialize(position, requiredCarriers, value, kind);
+            instance.GetComponent<NetworkObject>().Spawn();
         }
 
         private void SpawnPickups()
