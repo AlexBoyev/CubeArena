@@ -6,6 +6,232 @@ chosen, why. Newest first.
 
 ---
 
+## Real bug found via live testing: the seat→table and tablecloth climb zones ended in a zero-overlap seam against the table collider
+
+**What broke**: even after fixing the off-center-target fall-through above,
+the `banktest` bot still ended up back on the floor after appearing to
+reach table height (climbed to y≈18.1-18.2, close to `TableTopHeight`=
+18.75, then the very next `[Pos]` lines showed it at y≈0.08 — floor level —
+at the same XZ as its target). It also spent a long stretch (~35 log
+lines, tens of seconds) oscillating right at y≈10.7-10.9 before breaking
+through — see the "off-center table item" entry above; that part self-
+resolved and is left as-is (cosmetic, matches Milestone 2's already-
+documented leg→seat boundary flicker, just more pronounced for a bot
+climbing dead-center with zero lateral drift).
+
+**Root cause, found by computing the actual collider extents**:
+`SeatToTable_Climbable` was centered at `TableCenter.x - TableWidth/2 -
+0.4f` (=-5.4) with `scale.x = 0.8f`, giving it a right edge at exactly
+-5.0 — which is *exactly* the real `Table` collider's left edge (also
+-5.0, from `TableCenter.x - TableWidth/2`). Zero overlap, not a small gap
+as first suspected — an exact touching seam. This is a well-known Unity
+`CharacterController` failure mode: a character moving across a seam
+between two exactly-adjacent (not overlapping) colliders can slip through
+due to how `CharacterController.Move`'s sweep/collision margin handles the
+boundary, especially when arriving with real horizontal velocity (as the
+bot does the instant it stops climbing and starts walking normally toward
+the item). The mirrored `Tablecloth_Climbable` zone (Milestone 4's new
+"lower it down the tablecloth" route) had the identical pattern — centered
+at `TableCenter.x + TableWidth/2 + 0.4f` with the same `0.8f` width,
+landing its own inner edge exactly on the table's right edge (25.0).
+
+**Fix**: widened both zones' `x` scale from `0.8f` to `2f`, keeping their
+centers unchanged — gives each real physical overlap with the table
+collider (~0.6 units) instead of a bare seam, while `SeatToTable_Climbable`
+also keeps its existing overlap with the leg's own climbable column below
+it. Purely a widening, no position/height change, so it doesn't affect any
+already-tested anchor point (`ChairSeatHeight`, `TableTopHeight`, etc.).
+
+**Why this wasn't caught earlier**: Milestone 2's original climb-route bot
+test only verified reaching the table via the chair with a target far
+enough onto the table's own top (not right at this specific edge) that it
+likely never stood exactly at the seam long enough to fall through. This
+milestone's `lootdescent`/`banktest` routines are the first tests to
+specifically exercise stopping right at (and walking off) this edge —
+exactly the geometry both new descent methods (tablecloth, and carrying an
+item back down the chair) depend on, so this was worth finding and fixing
+at the geometry level rather than working around it in bot script logic
+only.
+
+**Correction after a third attempt**: this fix (widening the zones) did
+*not* actually resolve the fall-through — see the "STOPPED after three
+attempts" entry below for the full retrospective and the leading theory
+for what's really going on (probably that `Climbable` colliders are
+triggers, giving no physical support at all, combined with the widened
+zone's own footprint still not actually reaching the real `Table`
+collider's edge). Left this entry as-is rather than rewriting it, since
+the geometry widening was still a real, independently-reasoned fix worth
+keeping (it doesn't hurt and may matter once the deeper cause is fixed) —
+just not sufficient on its own.
+
+---
+
+## STOPPED after three genuine fix attempts: table-top loot items are unreachable end-to-end — a real bug, not the earlier infra hang
+
+Per AUTONOMOUS_RUN.md section 3 rule 3. Three separate, genuinely different
+root causes were found and fixed this session (each confirmed via live
+bot-mode testing to change the failure's shape, i.e. real progress each
+time, not blind repetition) — but the underlying symptom persists
+identically after all three:
+
+1. **Off-center climb target** (bot aimed straight at `WalletCoin1`'s full
+   3D position while still at the chair) → fixed by climbing straight up
+   first, then walking across the table separately (`AcrossTable` phase).
+2. **Zero-overlap seam** between `SeatToTable_Climbable`/
+   `Tablecloth_Climbable` and the real `Table` collider (both zones' edges
+   landed *exactly* touching the table's own edge) → fixed by widening
+   both zones from `0.8f` to `2f`.
+3. **Climbing off-axis from the zone's own center** (the bot's climb
+   waypoint used the chair leg's X, 1.1 units from `SeatToTableClimbX`) →
+   fixed by aligning the waypoint to the zone's actual center.
+
+**After all three**: the bot still climbs cleanly to table height
+(~y=18.2-18.3, confirmed via `[Climb]` log lines), holds there briefly,
+then — identically to every prior attempt — the next `[Pos]` samples show
+it back at floor level (y≈0.08) at the target item's XZ. Zero net change
+in the actual failure shape between attempt 2 and attempt 3, despite a
+real, verified fix each time. That's the signal to stop rather than guess
+at a fourth variant.
+
+**Leading theory for a fresh session to check first** (not attempted —
+this is exactly the kind of guess AUTONOMOUS_RUN.md says to stop before
+making a fourth time): `GameObject.CreatePrimitive(PrimitiveType.Cube)`
+colliders default to solid (`isTrigger = false`), but nothing in
+`KitchenBuilder.cs` was checked to *confirm* the `Climbable`-tagged zones
+are actually solid rather than triggers — and `IsNearClimbable`'s
+`Physics.OverlapSphereNonAlloc(..., QueryTriggerInteraction.Collide)`
+would happily detect a trigger just as well as a solid collider, so the
+detection working (climbing engages, `[Climb]` logs fire, Y visibly rises)
+is *not* proof the zone provides real physical support. If the zones are
+in fact triggers (or even if they're solid but the character's real XZ
+position during climbing — which the code keeps at the zone's own center,
+`SeatToTableClimbX = -5.4` — never actually enters the real `Table`
+collider's own footprint, which starts at `x=-5.0`), then the character is
+being held up purely by the climb-mode kinematic override each tick, with
+*nothing* underneath once that override stops (whether from `AcrossTable`
+switching movement modes, or `IsNearClimbable` flickering false) — a clean
+explanation for "reaches table height, holds while still 'climbing', falls
+the instant it isn't." **First thing to check**: read back the actual
+`Collider` component Unity attached to `SeatToTable_Climbable`/
+`Chair_Leg_Climbable` (a one-line Editor script or a runtime
+`Debug.Log(collider.isTrigger)` would confirm immediately) rather than
+assuming from the `GameObject.CreatePrimitive` default. If they are
+triggers, the fix is likely either widening the real `Table` collider
+itself to physically cover the climb column's X range (a solid geometry
+fix, independent of any bot-input quirk), or reconsidering whether
+`Climbable` zones should be solid platforms in the first place given
+players are expected to stand on them mid-climb (per the seat platform's
+own design, which *is* explicitly solid).
+
+**Current state, confirmed independently of this blocker**: both client
+and dedicated server rebuild clean after every fix attempt (4 full
+rebuild-and-retest cycles this session); the Milestone 3 floor-coin
+carry-and-bank mechanic re-verified fully working on the real M4 geometry
+(2-bot live test, banked successfully) — so ground-level loot carry/bank
+and the dedicated-server registration path (the prior session's blocker)
+are both solid. What's specifically unverified: reaching *any* table-top
+item (all 5 of the 6 loot items — everything except the M3 floor coin) via
+the chair climb, and both new descent methods (tablecloth, shove) that
+depend on already being on the table. Backend suite untouched by any of
+this, still 59/59 as of the last check.
+
+**Also unresolved, lower priority, not blocking this stop**: every
+screenshot captured this session (both the working floor-coin carry and
+the failed climb attempts) shows flat, bright, daytime-like lighting with
+a plain procedural sky — not Milestone 4's described night lighting pass
+(moonlight, dark ambient, bloom/vignette/fog). Worth checking once the
+climb blocker is resolved and a proper table-top screenshot is possible,
+but not investigated this session — the climb blocker took priority.
+
+---
+
+## Real bug found via live testing: climbing straight at an off-center table item can drop the bot back to the floor
+
+**What broke**: the `banktest`/`lootdescent` bot routines originally aimed
+the climb directly at `WalletCoin1SpawnPosition`'s full 3D position while
+still down at the chair. Live-tested (post-reboot, first real run of this
+code path — it was written pre-reboot but never actually executed due to
+the infrastructure blocker). Result: the bot climbed to y≈9 (inside the
+known leg→seat boundary flicker zone — see the existing "Climb zones" entry
+below), then fell all the way back to the floor and ended up standing
+directly under the item's XZ position, stuck.
+
+**Root cause**: `ComputeClimbMove` projects world-space input onto the
+character's own facing direction via a dot product (`verticalIntent =
+Dot(input, forward)`, `lateralIntent = Dot(input, right)`). When the bot
+faces (and inputs toward) a diagonal target — the chair column is at
+`z=15`, `WalletCoin1` is at `z=9`, six units off — `forward` is derived
+from that same diagonal direction, so `Dot(input, forward) ≈ |input|` and
+`Dot(input, right) ≈ 0`: nearly all climb intent becomes vertical, almost
+none becomes lateral shift. The bot rises but never actually drifts toward
+the item's real XZ. Then the pre-existing, already-documented cosmetic
+`_isClimbing` flicker at the leg→seat boundary causes one frame where
+`IsNearClimbable()` (checked fresh every frame for actual movement, not
+read from the flickering networked bool) returns false — normal gravity
+and normal horizontal walk-toward-target movement take over immediately,
+and since the bot's target is still that diagonal off-center point, it
+walks itself horizontally clean off the narrow (`DetectionRange`=1.2,
+column half-width ~1.5) climb zone before gravity finishes pulling it back
+down, landing on the floor under the item's XZ with no way back into the
+climbable column from there.
+
+**Fix**: `LootDescentTableTopArrivalPoint` (new) — a point directly above
+the chair column at `TableTopHeight` (zero XZ drift from the chair's own
+X/Z). The bot now climbs straight up to this point first (matching
+Milestone 2's already-proven straight-up bot path exactly), *then* a new
+`AcrossTable` phase walks horizontally from there to the real item's XZ —
+ordinary ground movement on the table's own flat top collider, no climbing
+involved once already at table height. This is exactly the path a real
+player would take naturally (climb up, then walk across the table) rather
+than beelining diagonally through a narrow climb column — the bug was in
+the bot's naive straight-line pathing, not in `ComputeClimbMove`/
+`IsNearClimbable` themselves, which are unchanged and still match
+Milestone 2's proven behavior for a straight-up climb.
+
+**Why this matters beyond the bot script**: the ring (`TableDepth/2 - 3`
+off the chair's Z) and especially the wristwatch (`TableWidth/2 - 6`,
+`TableDepth/2 - 6`, the "far corner") sit even further off-axis than
+`WalletCoin1` — a real human player who tries to climb while already
+steering hard toward one of those, rather than climbing straight up first,
+could plausibly hit the same "flicker + horizontal drift = fall all the
+way down" interaction, not just an automated bot. Not fixed at the
+mechanic level this pass (the underlying flicker is still the known
+Milestone 2 cosmetic imperfection, not re-opened here) — flagged in
+docs/PLAYTEST.md for a human to specifically try climbing while aiming at
+the ring/wristwatch, not just straight up, since that's the one case the
+bot verification above doesn't cover.
+
+---
+
+## New gotcha found post-reboot: a still-running server/client build locks its own output files for the next batch-mode rebuild
+
+While rebuilding for the new `banktest` bot-test mode (see below), a Unity
+batch-mode `BuildScript.BuildWindowsDedicatedServer` run failed with `Build
+Finished, Result: Failure` — misleading at first glance next to unrelated
+`[Licensing::Client] Error: Code 404 ... entitlement` lines earlier in the
+same log, which looked like a plausible post-reboot license/entitlement
+problem but turned out to be unrelated noise (present in a successful client
+build's log too). The real cause, found by reading the log's actual failure
+line rather than assuming from the nearby licensing errors: `Copying the
+file failed: The process cannot access the file because it is being used by
+another process` while overwriting
+`Builds/WindowsServer/CubeArena_Data/Plugins/x86_64/lib_burst_generated.dll`
+— the previous test session's dedicated server process (still running from
+the live-server verification a few steps earlier in this same run) had that
+DLL loaded and locked. Killing the stale `CubeArena.exe` process and
+rebuilding again (identical command) succeeded immediately. **Rule going
+forward**: kill any running client/server processes from a build's own
+output directory before triggering a batch-mode rebuild of that same
+target, not just before opening the Editor — this project's existing
+"close the Editor before batch mode" rule (CLAUDE.md) doesn't cover this
+case, since the conflict here was a standalone Player process, not the
+Editor itself. Also a general lesson: `command; echo "EXIT:$?"` in a shell
+always reports 0 (echo's own exit code), not the real command's — check the
+log's actual content/`Build Finished, Result:` line, not a wrapped exit-code
+echo, when scripting a build verification.
+
+---
+
 ## Real KayKit visuals layered over unchanged Milestone 2 collision, not re-derived from the meshes
 
 **Options**: (a) keep the Milestone 2 invisible primitive colliders/

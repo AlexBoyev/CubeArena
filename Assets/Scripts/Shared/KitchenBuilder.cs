@@ -265,6 +265,16 @@ namespace CubeArena.Shared
         // docs/DECISIONS.md) -> seat (a real solid platform to stand/walk on) -> a second
         // short Climbable zone up the table's near edge (seat -> table top). Collision
         // geometry unchanged from Milestone 2 — see class comment.
+        // Public: PlayerController's bot-mode climb-verification routines (RunLootDescent
+        // TestBotBehavior) target this exact X when climbing straight up, rather than the
+        // chair leg's own X (1.1 units further out) — see docs/DECISIONS.md's "seam" entry.
+        // Climbing dead-center on the leg's own X left the character resting at the very
+        // edge of this zone once above the leg (only a sliver of their collider actually
+        // over solid ground), fragile enough that ordinary horizontal walk movement could
+        // still knock them off it. Targeting this zone's own center keeps them solidly
+        // supported the whole way up.
+        public static float SeatToTableClimbX => TableCenter.x - TableWidth / 2f - 0.4f;
+
         private static void BuildChairClimbRoute(Transform parent, GameObject table)
         {
             var chairX = TableCenter.x - TableWidth / 2f - 1.5f;
@@ -293,13 +303,24 @@ namespace CubeArena.Shared
 
             // Seat-to-table climb: a thin climbable strip flush against the table's near
             // face, spanning from the seat up to the table top.
+            //
+            // Width (x=2f, not the original 0.8f) is deliberate, not cosmetic: at exactly
+            // 0.8f centered on TableCenter.x - TableWidth/2 - 0.4f, this zone's own right
+            // edge (-5.0) landed *exactly* touching the real Table collider's left edge
+            // (-5.0) with zero overlap — found via live bot-mode testing (docs/DECISIONS.md)
+            // to be a real Unity CharacterController seam: a player finishing the climb
+            // right at that boundary could slip through the zero-width gap and fall all the
+            // way to the floor instead of landing on the table surface. Widening to 2f
+            // (centered the same) gives the zone real overlap with both the leg's own
+            // Climbable column below (still contiguous) and the Table collider to the right
+            // (now ~0.6 units of solid overlap, not a bare seam).
             var climbHeight = TableTopHeight - ChairSeatHeight;
             var seatToTable = GameObject.CreatePrimitive(PrimitiveType.Cube);
             seatToTable.name = "SeatToTable_Climbable";
             seatToTable.transform.SetParent(parent, false);
             seatToTable.transform.localPosition = new Vector3(
-                TableCenter.x - TableWidth / 2f - 0.4f, ChairSeatHeight + climbHeight / 2f, chairZ);
-            seatToTable.transform.localScale = new Vector3(0.8f, climbHeight, 3f);
+                SeatToTableClimbX, ChairSeatHeight + climbHeight / 2f, chairZ);
+            seatToTable.transform.localScale = new Vector3(2f, climbHeight, 3f);
             MaterialUtil.ApplyLitColor(seatToTable.GetComponent<Renderer>(), new Color(0.5f, 0.4f, 0.3f, 0.4f));
             seatToTable.GetComponent<Renderer>().enabled = false;
             seatToTable.AddComponent<Climbable>();
@@ -341,11 +362,15 @@ namespace CubeArena.Shared
         // full art parity for the newest one).
         private static void BuildTablecloudClimbRoute(Transform parent)
         {
+            // Width (x=2f, not 0.8f) for the same reason as SeatToTable_Climbable just
+            // above: at 0.8f this zone's inner edge landed exactly flush against the real
+            // Table collider with zero overlap — a live-tested Unity CharacterController
+            // seam a player could fall through. See that comment for the full writeup.
             var zone = GameObject.CreatePrimitive(PrimitiveType.Cube);
             zone.name = "Tablecloth_Climbable";
             zone.transform.SetParent(parent, false);
             zone.transform.localPosition = TablecloudClimbPosition;
-            zone.transform.localScale = new Vector3(0.8f, TableTopHeight, 3f);
+            zone.transform.localScale = new Vector3(2f, TableTopHeight, 3f);
             MaterialUtil.ApplyLitColor(zone.GetComponent<Renderer>(), new Color(0.7f, 0.15f, 0.15f, 0.5f));
             zone.AddComponent<Climbable>();
         }

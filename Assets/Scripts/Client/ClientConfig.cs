@@ -35,10 +35,13 @@ namespace CubeArena.Client
         public float ScreenshotDelaySeconds { get; private set; }
 
         // Bot mode only: which scripted routine PlayerController.RunBotBehavior runs.
-        // "" (default) is the Milestone 3 coin-test routine (walk to nearest ground-level
-        // loot, grip, carry to the mousehole). "lootdescent" is Milestone 4's dedicated
-        // verification routine (climb to the table, grip a table-top item, shove it off
-        // the edge) — see PlayerController.RunLootDescentTestBotBehavior.
+        // "" (default) is the Milestone 3 coin-test routine (walk to nearest visible loot
+        // by straight-line distance, grip, carry to the mousehole — in practice this can
+        // still land on a table-top item for bots spawned close enough to the table, but
+        // isn't a reliable way to target one). "lootdescent" and "banktest" are Milestone
+        // 4's dedicated verification routines (climb to the table, grip a table-top item,
+        // then either shove it off the edge or carry it back down and bank it) — see
+        // PlayerController.RunLootDescentTestBotBehavior.
         public string BotTestMode { get; private set; }
 
         public static ClientConfig FromEnvironment()

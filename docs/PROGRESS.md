@@ -4,81 +4,86 @@ Read this first in any new session. Current milestone, what's done, what's
 next, known issues. Updated after every completed step per
 `AUTONOMOUS_RUN.md`.
 
-## STOPPED: Milestone 4 code complete but unverified live — a real, unrelated
-## infrastructure blocker, per AUTONOMOUS_RUN.md section 3 rule 3 (three
+## STOPPED: table-top loot items are unreachable — a real gameplay/geometry
+## bug found via live testing, per AUTONOMOUS_RUN.md section 3 rule 3 (three
 ## genuine fix attempts, none solved it)
 
-**What's stopped, and why**: all of Milestone 4's code is written and
-compiles cleanly in both a fresh client and dedicated server build (confirmed
-byte-present in both — see below), and the backend suite is still 59/59. But
-the milestone's required live bot-mode verification (and therefore also the
-Play-mode screenshot, which needs a live server to connect to) could not run:
-launching *any* dedicated server right now hangs forever on
-`FleetClient.RegisterAsync` — specifically inside `PostAsync`'s
-`UnityWebRequest` POST to `/fleet/register`, confirmed via bracketing
-diagnostic logging (`Debug.Log` calls added and removed again around every
-step of `ServerBootstrap.RunAsync`) that execution reaches "before
-FleetClient.RegisterAsync" and never reaches "after." This is **not** a bug
-in this milestone's own diff — `FleetClient.cs` is completely unmodified —
-and this exact registration path demonstrably worked earlier in this same
-session (the Milestone 3 fork's live 2-bot banking test, and this Milestone
-4 fork's own earlier work, both required a dedicated server to have
-registered successfully). Something changed in the environment partway
-through this very long session, most likely from the sheer number of Unity
-batch processes started and force-killed today (build hangs, stalled
-processes, etc. — see the session record).
+**The prior infrastructure blocker (FleetClient/fleet-registration hang) is
+fully resolved.** The machine reboot fixed it exactly as suspected — a
+fresh dedicated server now registers with the backend successfully every
+time (`[FleetClient] Registered...` / `[ServerBootstrap] Listening...`
+both fire immediately, no hang), confirmed across 5 separate fresh-server
+launches this session. That whole prior STOPPED notice is now historical;
+see docs/DECISIONS.md's "still-running server/client build locks its own
+output files" entry for one genuinely new related gotcha found along the
+way (kill stale `CubeArena.exe` processes before any batch-mode rebuild,
+not just before opening the Editor).
 
-**Three genuine fix attempts, all failed** (per AUTONOMOUS_RUN.md's own
-"don't loop" rule, stopping here rather than trying a fourth):
-1. Pointed the server at `http://127.0.0.1:8080` instead of
-   `http://localhost:8080` (ruling out a DNS/hostname-resolution quirk) —
-   same hang.
-2. Restarted the backend's Docker container (`docker compose restart api`)
-   to rule out a degraded Kestrel-side connection/thread-pool state — same
-   hang, even though a direct `curl -X POST` to the exact same endpoint,
-   with the exact same headers, from the exact same machine, at the exact
-   same time, succeeded instantly (200, ~27ms) — this rules out the backend
-   itself being unhealthy.
-3. Set `UploadHandlerRaw.contentType` explicitly (a known Unity gotcha:
-   relying only on a manually-set `Content-Type` *header* without also
-   setting the upload handler's own `contentType` property can leave a
-   `UnityWebRequest`'s body-framing metadata inconsistent in some versions)
-   — rebuilt, retested, same hang. Reverted this change since it didn't
-   help and I don't want an unverified "fix" claim sitting in the code —
-   `FleetClient.cs` is back to byte-identical with what Milestone 3 shipped.
+**What's stopped now, and why**: with the infra blocker gone, live testing
+began — and found a real, reproducible bug: **no table-top loot item can
+currently be reached end-to-end via the chair climb.** A bot climbs the
+chair cleanly and reaches table height (`y≈18.2-18.3`, confirmed via
+`[Climb]` log lines matching `TableTopHeight=18.75`), holds there briefly,
+then falls straight through to the floor and lands at the target item's
+XZ position — confirmed visually via a live screenshot (thief standing at
+floor level under the table, giant's legs visible above) and via server
+log `[Pos]` traces. The Milestone 3 floor coin (ground-level, no climbing
+needed) still works perfectly on the real M4 geometry — carried and banked
+cleanly by a live 2-bot test — so this is specific to the *table-top*
+loot/climb interaction, not the loot/banking system generally.
 
-**What I could confirm independently of the live test**: both the client
-and dedicated server executables were rebuilt after every source change and
-searched directly for Milestone 4 symbol names in their compiled managed
-DLLs (`ServerShove`, `WristwatchSpawnPosition`, `LootDescentPhase`,
-`TablecloudClimb`, `RunLootDescentTestBotBehavior`, `BotTestMode` — all
-present in both builds), so the actual code is real and built correctly;
-what's unverified is only its *runtime networked behavior*. Backend suite:
-59/59.
+**Three genuine, different fix attempts, each confirmed via live rebuild-
+and-retest to actually change the failure's shape (real progress, not
+blind repetition) — but the core symptom (reach table height, then fall
+through to the floor) persisted identically after all three**:
+1. The bot's own pathing aimed straight at an off-center table item while
+   still down at the chair, which (given how `ComputeClimbMove`'s forward-
+   aligned dot product works) produced zero real lateral drift during
+   climbing — fixed by climbing straight up first, then walking across the
+   table separately.
+2. The `SeatToTable_Climbable`/`Tablecloth_Climbable` zones' edges landed
+   *exactly* touching the real `Table` collider's edge (a zero-overlap
+   seam, a known `CharacterController` gotcha) — fixed by widening both
+   zones.
+3. The bot's climb waypoint was centered on the chair leg's own X, 1.1
+   units off the climb zone's actual center — fixed by aligning it.
 
-**What a fresh session (or you) should do next**: this is squarely a "stop
-and tell me" case per AUTONOMOUS_RUN.md section 3 rule 3, not something to
-keep guessing at. Likely worth trying, roughly in order of cheapness: (a) a
-full reboot of this machine (clears any accumulated Windows-level socket/
-handle state from today's many force-killed Unity processes — my
-`Get-NetTCPConnection` check didn't show obvious exhaustion, but it's the
-cheapest thing that rules out a wide class of causes at once), (b) if that
-doesn't fix it, checking whether the *client* build can register with the
-*same* backend right now (isolates whether this is specific to headless
-`-batchmode -nographics` server builds or affects any Unity process), (c)
-capturing a packet trace (`netstat`/Wireshark) on the hung POST's specific
-TCP connection to see whether the request body is actually leaving the
-process at all — if Wireshark shows a fully-sent, well-formed HTTP request
-with a correct `Content-Length` and the response never arrives, that
-implicates the backend/Docker networking layer despite the curl test;
-if the request itself is incomplete/never sent, that implicates Unity's
-own `UnityWebRequest`/networking module specifically.
+Full technical writeup of all three, plus the leading theory for what's
+*actually* going on (most likely: `Climbable` zones may be non-solid
+triggers providing zero physical support, with the character held up only
+by climb-mode's kinematic override each tick and nothing catching them
+once that override stops) is in docs/DECISIONS.md's "STOPPED after three
+genuine fix attempts" entry — read that before touching this again, it has
+the specific next diagnostic step (confirm via `collider.isTrigger`
+whether the `Climbable` primitives are actually solid) rather than
+guessing at a fourth variant blind.
 
-Once resolved: re-run this milestone's live bot-mode verification (chair
-climb still works with real geometry, a new loot item can be gripped/
-carried/banked, the shove descent path works via the new `lootdescent` bot
-test mode — `CUBEARENA_BOT_TEST_MODE=lootdescent`), capture and inspect a
-Play-mode screenshot, then finish per the usual pattern (this file,
+**What's confirmed working independently of this blocker**: dedicated
+server registration (fully fixed, see above); ground-level loot carry/
+bank on the real M4 geometry (M3's floor coin, live 2-bot test, banked
+successfully); both client and dedicated server rebuild clean through 4
+full fix-rebuild-retest cycles this session; backend suite untouched,
+still 59/59.
+
+**What's still unverified**: reaching *any* of the 5 table-top loot items
+(3 wallet coins, ring, wristwatch — everything except the M3 floor coin)
+via the chair climb; both new descent methods (tablecloth, shove), which
+both depend on already being on the table; a proper "the kitchen looks
+like the kitchen at night" screenshot (every screenshot captured this
+session, including the working floor-coin carry, shows flat/bright/
+daytime-like lighting with a plain procedural sky, not the described night
+pass — flagged in docs/DECISIONS.md as a separate, lower-priority,
+not-yet-investigated issue).
+
+**What a fresh session (or you) should do next**: start with
+docs/DECISIONS.md's leading theory (confirm whether `Climbable` colliders
+are triggers via a one-line diagnostic), not a guess at a fourth pathing
+fix. Once table-top items are reachable: re-verify with the `banktest`
+bot-test mode (climb + grip + carry-down + bank, already built) and the
+existing `lootdescent` mode (climb + grip + shove, already built — not yet
+run at all this session since it shares the same broken climb path), then
+capture and inspect a proper screenshot, then also look into the lighting-
+pass question above before finally closing Milestone 4 (update this file,
 docs/DECISIONS.md, docs/PLAYTEST.md, commit, push).
 
 ## Status: Milestone 4 (real assets, lighting, full loot, descent methods) —
@@ -510,6 +515,24 @@ anything requiring a live server connection (the whole point of this
 milestone's playtest bar — "the kitchen looks like the kitchen" needs an
 actual screenshot, and "all descent methods work" needs the bot-mode
 routines above to actually run).
+
+**Added this session, post-reboot, while chasing the table-top climb bug
+(see the STOPPED notice at the top of this file)**:
+- New `banktest` bot-test mode (`CUBEARENA_BOT_TEST_MODE=banktest`),
+  alongside the existing `lootdescent` — shares `RunLootDescentTestBotBehavior`'s
+  climb-to-table phases but carries the gripped item back down and banks it
+  instead of shoving, specifically to verify a new table-top item's grip/
+  carry/bank path (not just the shove path `lootdescent` already covered).
+- `KitchenBuilder.SeatToTableClimbX` (new public constant) — the actual
+  climb column center, now shared between the geometry builder and the
+  bot's own pathing (previously the bot used the chair leg's own X, 1.1
+  units off).
+- `SeatToTable_Climbable`/`Tablecloth_Climbable` widened from `0.8f` to
+  `2f` (x scale) to remove a zero-overlap seam against the real `Table`
+  collider.
+- None of these fully resolved the underlying fall-through bug (see the
+  STOPPED notice) but are real, reasoned fixes worth keeping regardless —
+  don't revert them while investigating further.
 
 ## Milestone 2 plan
 

@@ -403,8 +403,10 @@ namespace CubeArena.Shared
 
         // Bot mode only: which scripted routine RunBotBehavior runs — see
         // ClientConfig.BotTestMode's declaration for the full explanation. "" (default,
-        // Milestone 3's coin-test routine) or "lootdescent" (Milestone 4's verification
-        // routine, RunLootDescentTestBotBehavior).
+        // Milestone 3's coin-test routine), "lootdescent" (Milestone 4's shove-descent
+        // verification routine), or "banktest" (Milestone 4's chair-climb + new-item
+        // grip/carry/bank verification routine — both share RunLootDescentTestBotBehavior's
+        // climb-to-table-item phases, diverging only after the grip: shove vs. carry home).
         public static string BotTestMode = "";
 
         private void ReadAndSendInput()
@@ -533,7 +535,7 @@ namespace CubeArena.Shared
 
         private void RunBotBehavior()
         {
-            if (BotTestMode == "lootdescent")
+            if (BotTestMode == "lootdescent" || BotTestMode == "banktest")
             {
                 RunLootDescentTestBotBehavior();
                 return;
@@ -606,27 +608,61 @@ namespace CubeArena.Shared
         }
 
         // Owner-client-side only, only reached when BotModeEnabled and BotTestMode ==
-        // "lootdescent" — Milestone 4's verification routine: climb to the table (reusing
-        // the exact Milestone 2 chair route, still proximity-gated and unchanged), grip a
-        // table-top loot item, then shove it off the edge. Exercises the two genuinely new
-        // pieces of code this milestone (a table-top grip, and ServerShove's real-physics
-        // fall) end-to-end, confirmed via the server's [Loot]/[Bank] log lines. Carrying an
-        // item down the chair/tablecloth instead of shoving isn't separately bot-tested —
-        // that path reuses the same already-proven climb code plus a height-tracking
-        // change validated by inspection, not a new movement path — see docs/DECISIONS.md.
+        // "lootdescent" or "banktest" — Milestone 4's verification routines: climb to the
+        // table (reusing the exact Milestone 2 chair route, still proximity-gated and
+        // unchanged), grip a table-top loot item, then either shove it off the edge
+        // ("lootdescent", exercising ServerShove's real-physics fall) or carry it back down
+        // the same climb route and bank it at the mousehole ("banktest", exercising a new
+        // loot item's grip/carry/bank end-to-end on real geometry — added after a live
+        // default-mode run showed FindNearestVisibleLootItem preferring the M3 floor coin
+        // over any table item for bots spawned at the actual spawn points, so the coin-test
+        // routine alone couldn't exercise a new item without this explicit target). Both
+        // confirmed via the server's [Climb]/[Loot]/[Bank] log lines.
         private enum LootDescentPhase
         {
             ToChair,
-            ToItem, // walking this also carries the bot up the whole chair climb route en route — see below
+            ToItem, // climbs straight up the chair column to table height — see below
+            AcrossTable, // walks from directly above the chair to the item's real XZ, at table height
             Grip,
             Shove,
+            ToMousehole, // banktest only — carries the item back down the same climb route
             Done,
         }
 
         private LootDescentPhase _lootDescentPhase;
         private float _lootDescentActionCooldown;
+
+        // Deliberately KitchenBuilder.SeatToTableClimbX, not the chair leg's own (further
+        // out) X — see LootDescentTableTopArrivalPoint's comment. ComputeClimbMove's
+        // forward-aligned dot product means this bot produces ~zero real lateral drift
+        // once climbing starts (facing always tracks input by construction, so
+        // Dot(input, right) ≈ 0 the whole time) — the *only* phase that can actually move
+        // the bot sideways is this one, ordinary grounded walking before climbing engages.
+        // Landing here first, already lined up with the climb column's own center, is what
+        // keeps the entire subsequent straight-up climb solidly supported.
         private static Vector3 LootDescentChairWaypoint =>
-            new(KitchenBuilder.TableCenter.x - KitchenBuilder.TableWidth / 2f - 1.5f, 0f, KitchenBuilder.TableCenter.z);
+            new(KitchenBuilder.SeatToTableClimbX, 0f, KitchenBuilder.TableCenter.z);
+
+        // Directly above the SeatToTable_Climbable zone's own center (not the chair leg's
+        // own X, which is 1.1 units further out — see docs/DECISIONS.md's "seam" entry for
+        // why that distinction matters: climbing dead-center on the leg's X left the
+        // character resting at the very edge of the zone above it, an unreliable sliver of
+        // support) at table height — climbing straight up here (zero XZ drift) keeps the
+        // bot solidly inside the SeatToTable_Climbable zone the whole way, avoiding a
+        // separate real bug found via live testing: aiming the climb straight at an
+        // off-center table item's full 3D position (e.g. WalletCoin1, 6 units off the
+        // chair's own Z) makes ComputeClimbMove's forward-aligned dot product route nearly
+        // all movement intent into vertical climb with ~zero lateral shift (since the bot's
+        // facing already points toward that diagonal target, forward ≈ input), so the bot
+        // never actually drifts toward the item while climbing — then the known cosmetic
+        // leg→seat boundary flicker (docs/DECISIONS.md's "Climb zones" entry) drops
+        // IsNearClimbable for a moment, normal gravity + normal horizontal walk-toward-
+        // target movement immediately take over, and the bot walks off the climb column's
+        // XZ before it can re-enter it — ending up back on the floor, not part-way up. A
+        // real player naturally avoids this by climbing straight up first and walking
+        // across the table afterward; the bot now does the same explicitly.
+        private static Vector3 LootDescentTableTopArrivalPoint =>
+            new(KitchenBuilder.SeatToTableClimbX, KitchenBuilder.TableTopHeight, LootDescentChairWaypoint.z);
 
         private void RunLootDescentTestBotBehavior()
         {
@@ -639,10 +675,17 @@ namespace CubeArena.Shared
                     target = LootDescentChairWaypoint;
                     break;
                 case LootDescentPhase.ToItem:
-                    // Walking from the chair waypoint on toward the table-top item is
-                    // enough to carry the bot up the whole climb route on the way —
+                    // Straight up the chair column (zero XZ drift) — see
+                    // LootDescentTableTopArrivalPoint's comment for why this must stay
+                    // directly above the chair rather than aiming at the item's own XZ.
                     // IsNearClimbable engages automatically based on proximity to any
                     // Climbable collider, exactly like a real player (Milestone 2).
+                    target = LootDescentTableTopArrivalPoint;
+                    break;
+                case LootDescentPhase.AcrossTable:
+                    // Now at table height and off any Climbable zone — this is just
+                    // ordinary horizontal walking across the table's own flat top
+                    // collider, the same as walking on any other floor surface.
                     target = KitchenBuilder.WalletCoin1SpawnPosition;
                     break;
                 case LootDescentPhase.Grip:
@@ -658,7 +701,7 @@ namespace CubeArena.Shared
                         return;
                     }
 
-                    _lootDescentPhase = LootDescentPhase.Shove;
+                    _lootDescentPhase = BotTestMode == "banktest" ? LootDescentPhase.ToMousehole : LootDescentPhase.Shove;
                     return;
                 case LootDescentPhase.Shove:
                     if (_lootDescentActionCooldown <= 0f)
@@ -669,6 +712,13 @@ namespace CubeArena.Shared
 
                     CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
                     return;
+                case LootDescentPhase.ToMousehole:
+                    // No explicit "bank" action — LootItem itself banks on proximity while
+                    // still gripped (the same mechanism the default coin-test routine
+                    // relies on), so this phase just needs to keep walking toward the
+                    // mousehole while still gripping.
+                    target = KitchenBuilder.MouseholePosition;
+                    break;
                 default:
                     CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
                     return;
@@ -685,7 +735,22 @@ namespace CubeArena.Shared
 
             if (_lootDescentPhase == LootDescentPhase.ToItem && toTarget.magnitude <= WaypointSwitchDistance)
             {
+                _lootDescentPhase = LootDescentPhase.AcrossTable;
+                return;
+            }
+
+            if (_lootDescentPhase == LootDescentPhase.AcrossTable && toTarget.magnitude <= WaypointSwitchDistance)
+            {
                 _lootDescentPhase = LootDescentPhase.Grip;
+                return;
+            }
+
+            if (_lootDescentPhase == LootDescentPhase.ToMousehole && toTargetXZ.magnitude <= WaypointSwitchDistance)
+            {
+                // Banking itself already happened server-side via LootItem's own proximity
+                // check by the time distance closes this far, or is about to on the next
+                // tick — either way, this phase's job is done.
+                _lootDescentPhase = LootDescentPhase.Done;
                 return;
             }
 

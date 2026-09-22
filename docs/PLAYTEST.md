@@ -112,43 +112,43 @@ implies but that a server log alone can't confirm.
 
 ## Milestone 4 — Real assets, lighting, full loot, all three descent methods
 
-**Status: code complete, live verification blocked — not a code issue.**
-See the STOPPED notice at the top of `docs/PROGRESS.md` for the full
-writeup. In short: launching any dedicated server right now hangs forever
-inside `FleetClient.RegisterAsync`'s POST to the backend — confirmed via
-diagnostic logging that it's specifically that call, confirmed the backend
-itself is healthy (a direct `curl POST` to the same endpoint succeeds
-instantly), and confirmed via three separate fix attempts (different host,
-backend container restart, a `UnityWebRequest` upload-framing fix) that
-none resolve it. This is environmental, not something in this milestone's
-diff — `FleetClient.cs` is untouched, and this same registration path
-worked earlier in this very session.
+**Status: STOPPED — a real gameplay/geometry bug, not the infra hang.**
+See the STOPPED notice at the top of `docs/PROGRESS.md` and
+docs/DECISIONS.md's "STOPPED after three genuine fix attempts" entry for
+the full writeup. The prior dedicated-server registration hang (this
+section used to describe it) is fully resolved — the machine reboot fixed
+it, confirmed across 5 fresh-server launches this session. What's actually
+blocking now: **no table-top loot item can be reached end-to-end via the
+chair climb** — a bot reaches table height cleanly but then falls straight
+through to the floor every time, across three different genuine fix
+attempts. The Milestone 3 floor coin (ground-level, no climbing) still
+works perfectly on the real M4 geometry.
 
-**Verified automatically, without a live server**: both the client and
-dedicated server rebuild clean (zero compile errors) after every source
-change made this milestone; every new symbol (`ServerShove`,
-`WristwatchSpawnPosition`, `LootDescentPhase`, `TablecloudClimb`,
-`RunLootDescentTestBotBehavior`, `BotTestMode`) confirmed present in the
-compiled managed DLLs by direct byte search, not assumed from source
-review alone. Backend suite: 59/59.
+**Verified via live testing this session**: dedicated server registration
+(fully working now); the M3 floor coin's grip/carry/bank cycle on the real
+M4 geometry (live 2-bot test, banked cleanly — `[Bank] ... banked for 10`);
+both client and dedicated server rebuild clean through 4 full fix-rebuild-
+retest cycles. Backend suite: 59/59.
 
-**Not verified this session — needs a live server first**:
-- The chair climb route still working exactly as before, now that its
-  invisible collision primitives share space with real visual meshes
-  (Milestone 2's own test needs re-running, not assumed unaffected).
-- Any of the four new loot items (3 wallet coins, ring, wristwatch) being
-  gripped/carried/banked.
+**Not verified — blocked by the table-top climb bug above**:
+- The chair climb route reaching a table-top item and staying there (it
+  reaches table height but falls through every time — see docs/DECISIONS.md).
+- Any of the five table-top loot items (3 wallet coins, ring, wristwatch)
+  being gripped/carried/banked.
 - The two new descent methods: shove (`F` while gripping) and the
-  tablecloth climb-down route.
-- The dedicated `CUBEARENA_BOT_TEST_MODE=lootdescent` verification bot
-  routine (climb to the table → grip → shove) actually running.
-- Any visual/screenshot confirmation — "the kitchen looks like the
-  kitchen" (real KayKit geometry, the vertex-coloured rug, the night
-  lighting pass) needs eyes on an actual render, which needs a live
-  client connected to a live server.
+  tablecloth climb-down route — both depend on already being on the table.
+- The `CUBEARENA_BOT_TEST_MODE=lootdescent`/`banktest` verification bot
+  routines completing (both built, both blocked by the same underlying bug).
+- A proper "kitchen looks like a kitchen at night" screenshot — every
+  screenshot captured this session (including the working floor-coin
+  carry) shows flat, bright, daytime-like lighting with a plain procedural
+  sky, not the described night pass. Not investigated this session (the
+  climb blocker took priority) — worth a look once that's resolved, since
+  it may be as simple as the lighting pass GameObjects not actually being
+  built/applied, or may be a legitimate framing/angle artifact.
 
-**Needs your eyes, once the infrastructure blocker is resolved and a live
-session is possible**:
+**Needs your eyes, once the table-top climb bug and the lighting question
+above are both resolved and a live session is possible**:
 - Whether the kitchen genuinely reads as "a kitchen at night" — the
   lighting pass (moonlight/fridge/phone/ambient + bloom/vignette/film
   grain/depth fog) was tuned by feel, not validated against a real render.
