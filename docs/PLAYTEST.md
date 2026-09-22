@@ -109,3 +109,59 @@ implies but that a server log alone can't confirm.
 - `LootSettings.asset` exposes `GripRange`/`DragSpeed`/`CarrySpeed`/
   `CarryHeight`/`BankRadius` for retuning without a code change if the
   carry feel needs adjusting.
+
+## Milestone 4 — Real assets, lighting, full loot, all three descent methods
+
+**Status: code complete, live verification blocked — not a code issue.**
+See the STOPPED notice at the top of `docs/PROGRESS.md` for the full
+writeup. In short: launching any dedicated server right now hangs forever
+inside `FleetClient.RegisterAsync`'s POST to the backend — confirmed via
+diagnostic logging that it's specifically that call, confirmed the backend
+itself is healthy (a direct `curl POST` to the same endpoint succeeds
+instantly), and confirmed via three separate fix attempts (different host,
+backend container restart, a `UnityWebRequest` upload-framing fix) that
+none resolve it. This is environmental, not something in this milestone's
+diff — `FleetClient.cs` is untouched, and this same registration path
+worked earlier in this very session.
+
+**Verified automatically, without a live server**: both the client and
+dedicated server rebuild clean (zero compile errors) after every source
+change made this milestone; every new symbol (`ServerShove`,
+`WristwatchSpawnPosition`, `LootDescentPhase`, `TablecloudClimb`,
+`RunLootDescentTestBotBehavior`, `BotTestMode`) confirmed present in the
+compiled managed DLLs by direct byte search, not assumed from source
+review alone. Backend suite: 59/59.
+
+**Not verified this session — needs a live server first**:
+- The chair climb route still working exactly as before, now that its
+  invisible collision primitives share space with real visual meshes
+  (Milestone 2's own test needs re-running, not assumed unaffected).
+- Any of the four new loot items (3 wallet coins, ring, wristwatch) being
+  gripped/carried/banked.
+- The two new descent methods: shove (`F` while gripping) and the
+  tablecloth climb-down route.
+- The dedicated `CUBEARENA_BOT_TEST_MODE=lootdescent` verification bot
+  routine (climb to the table → grip → shove) actually running.
+- Any visual/screenshot confirmation — "the kitchen looks like the
+  kitchen" (real KayKit geometry, the vertex-coloured rug, the night
+  lighting pass) needs eyes on an actual render, which needs a live
+  client connected to a live server.
+
+**Needs your eyes, once the infrastructure blocker is resolved and a live
+session is possible**:
+- Whether the kitchen genuinely reads as "a kitchen at night" — the
+  lighting pass (moonlight/fridge/phone/ambient + bloom/vignette/film
+  grain/depth fog) was tuned by feel, not validated against a real render.
+- Whether the table/chair visual proportions look acceptable — both are
+  scaled to hit the *gameplay* anchors (`TableTopHeight`/`ChairSeatHeight`)
+  exactly, not necessarily to look naturally proportioned (the table in
+  particular may read as a bit tall/spindly — see docs/DECISIONS.md).
+- Whether the single-stretched-panel walls/counter (real geometry, but not
+  properly tiled — see docs/DECISIONS.md) look acceptable or too obviously
+  stretched for this pass.
+- Whether shoving an item off the table actually *feels* distinct/risky
+  compared to carrying it down, given noise doesn't exist yet to
+  differentiate them mechanically (that's Milestone 5).
+- The 4 remaining loot items' placeholder visuals (recoloured/resized
+  flattened cylinders, same shape as the floor coin) — acceptable as
+  placeholders, or worth a slightly more distinct shape before Milestone 6?

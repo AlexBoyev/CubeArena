@@ -6,6 +6,119 @@ chosen, why. Newest first.
 
 ---
 
+## Real KayKit visuals layered over unchanged Milestone 2 collision, not re-derived from the meshes
+
+**Options**: (a) keep the Milestone 2 invisible primitive colliders/
+`Climbable` zones exactly as-is (already verified working via a real
+bot-mode climb test) and add the real meshes purely as visual dressing on
+top, scaled to align with those proven anchors; (b) re-derive the climb
+route's collision heights directly from the real `chair_A` mesh's own
+proportions.
+
+**Chosen**: (a). Checked `chair_A` directly (probed its Renderer bounds and
+its full child hierarchy) — it's a single unlabelled mesh with no
+discoverable "seat" sub-part, so any seat-height figure derived from it
+would be a proportion *guess* (I used ~47% of total height as a plausible
+dining-chair ratio, purely for the *visual* chair's own scale — not for
+anything collision-relevant). Re-deriving the actual climbable collision
+from that guess risked silently breaking the one thing Milestone 2 already
+proved works end-to-end (a bot walking the mousehole→chair→table route),
+for a purely cosmetic gain. The real mesh's own top-level anchors
+(`TableTopHeight`, `ChairSeatHeight`) still drive its scale, so it's not
+arbitrarily placed — just not the *source* of gameplay-critical numbers.
+
+**How to apply going forward**: any future real-asset swap for a
+climb-critical piece should default to this same pattern (visual dressing
+over proven invisible collision) unless the new mesh has clearly-labelled,
+reliable sub-part transforms to anchor to instead.
+
+---
+
+## Tablecloth/chair loot descent: one height-tracking fix, not two new systems
+
+**Options**: (a) build "carry down the chair" and "lower down the
+tablecloth" as distinct, purpose-built mechanics each aware of their own
+route; (b) fix `LootItem`'s carried/dragged target height to track the
+*grippers' own current Y* (plus a small offset) instead of a fixed
+absolute height, and let both descent methods emerge for free from the
+already-proven Milestone 2 climbing mechanic (which is purely
+proximity-gated, not route-specific, and already works identically
+whether or not the player happens to be gripping something).
+
+**Chosen**: (b). `PlayerController.IsNearClimbable`/`ComputeClimbMove`
+never checked grip state at all — a gripping player can already climb any
+`Climbable` zone exactly like a non-gripping one. The only reason table-top
+loot couldn't previously be "carried down" anything is that
+`LootItem.FixedUpdate` targeted a *fixed* `CarryHeight` (≈1.2m above the
+floor) regardless of the grippers' actual position — a table-top item
+would have instantly sunk toward floor height the moment it was gripped,
+regardless of where the grippers physically stood. Changing the target to
+`average gripper Y + offset` (new `CarryHeightOffset`/`DragHeightOffset`
+tunables, replacing the old absolute `CarryHeight`) makes the item
+naturally track a gripper's real 3D position as they walk *any* climb
+route — the tablecloth's new `Climbable` zone at the table's east edge and
+the existing chair route both "just work" as loot-descent paths with zero
+new movement code. Only the tablecloth zone's geometry itself (a new
+invisible `Climbable` box) is new; the mechanic is 100% reused.
+
+**Known simplification**: the tablecloth zone spans floor-to-table-top
+directly rather than literally stopping "~5m above the floor" per the
+brief's flavour text (implying a controlled-descent-then-drop). Extending
+it the full height was judged lower-risk than inventing a new
+"controlled descent, then fall the last 5m while still gripped" sub-state
+for a first pass — revisit if a human playtest specifically wants that
+extra beat.
+
+---
+
+## Shove uses real Rigidbody physics, which required removing LootItem's old "always glide toward a target" FixedUpdate
+
+**Options**: (a) keep `LootItem`'s Milestone 3 behavior of calling
+`Rigidbody.MovePosition` toward a computed target *every* tick regardless
+of grip state (including a "nobody's gripping it, glide down to floor
+height" branch for the ungripped case), and bolt a separate shove
+mechanism on top; (b) remove the unconditional per-tick `MovePosition`
+call for the ungripped case entirely, so an item with no grippers is
+simply left to Unity's own Rigidbody physics (gravity + collision,
+already enabled — the server's own copy is non-kinematic under
+`AuthorityModes.Server`) — then a "shove" is just: clear grippers, apply
+an outward+upward velocity, and let physics take over.
+
+**Chosen**: (b). Milestone 3's original ungripped-case behavior
+(`MoveTowards` straight down to a hardcoded near-floor height every tick)
+was never collision-aware — it would have silently sunk a dropped
+table-top item straight through the table toward the floor, a latent bug
+that never surfaced in Milestone 3 because the only item that milestone
+shipped (the floor coin) never left floor height in the first place. Since
+Milestone 4 adds table-top items that *can* be dropped mid-air, this bug
+needed fixing regardless of shove — and fixing it (just stop overriding
+position when nobody's gripping) is also exactly what a real, believable
+"shove it off the table" needs: genuine gravity/collision, not a scripted
+glide. One fix serves both. A `_isFreeFalling`-style extra flag turned out
+unnecessary — "no grippers" already means "let physics run," so a shove
+is just a velocity kick into that same state, nothing more.
+
+---
+
+## Modular wall/counter tiling descoped this pass — one stretched panel per segment instead
+
+**Options**: (a) tile several real KayKit wall/counter modules
+end-to-end to cover each wall/counter run accurately; (b) use a single
+module per segment, non-uniformly scaled/stretched to span the whole run.
+
+**Chosen**: (b), for this pass. Tiling requires knowing exactly how each
+module's own footprint should repeat (module width, seams, corner pieces)
+— real content but meaningfully more code and per-asset judgment calls
+than this milestone had budget for alongside the loot/descent-method work
+(the larger, more novel piece of this milestone). A single stretched panel
+is visually rougher (proportions/UVs won't read as "tiled brick," more
+like a stretched banner) but still real KayKit geometry, not a primitive,
+and satisfies "the kitchen looks like the kitchen" as a first pass.
+Revisit with proper tiling in a future art-polish pass if a human playtest
+flags the stretching as too rough.
+
+---
+
 ## LootItem moves toward average gripper *position*, not integrated input
 
 **Options**: (a) each tick, move the item toward the average of its current

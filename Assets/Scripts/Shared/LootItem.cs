@@ -20,16 +20,33 @@ namespace CubeArena.Shared
     // server does to every client, gripping or not. Grip membership is a plain server-side
     // set — any player within GripRange, roughly facing the item, can add themselves.
     // Each tick the server moves the item toward the average position of its current
-    // grippers, at DragSpeed (below requiredCarriers, item stays on the floor) or
-    // CarrySpeed (at/above requiredCarriers, item lifts to CarryHeight) — this stands in
-    // for "the server averages grippers' input intent" from the brief in a way that's
-    // simple to implement correctly for any gripper count and naturally handles a
+    // grippers, at DragSpeed (below requiredCarriers) or CarrySpeed (at/above it) — this
+    // stands in for "the server averages grippers' input intent" from the brief in a way
+    // that's simple to implement correctly for any gripper count and naturally handles a
     // carrier dropping out (the average, and therefore the carry/drag state, just
-    // recomputes next tick) without special-casing disconnects or under-staffing. See
-    // docs/DECISIONS.md for the trade-off write-up.
+    // recomputes next tick) without special-casing disconnects or under-staffing.
+    //
+    // Milestone 4 change: the carried/dragged target height is now the *grippers' own
+    // current Y* plus a small offset (CarryHeightOffset/DragHeightOffset), not a fixed
+    // absolute height. This is what makes "carry it down the chair" and "lower it down
+    // the tablecloth" (both new table-top descent methods) work for free — a gripper
+    // physically climbing a Climbable zone (PlayerController.IsNearClimbable, unchanged
+    // since Milestone 2, proximity-gated and not route-specific) naturally drags the item
+    // down with them, no route-aware loot code needed. See docs/DECISIONS.md.
     [RequireComponent(typeof(Rigidbody))]
     public class LootItem : NetworkBehaviour
     {
+        // Which placeholder visual to show — purely cosmetic, deterministic per-client
+        // from this replicated value (same pattern as PlayerController's pose-driven
+        // visual squash), not a real distinct mesh per kind (no jewelry/watch meshes in
+        // the imported KayKit set — see docs/DECISIONS.md).
+        public enum LootKind : byte
+        {
+            Coin,
+            Ring,
+            Wristwatch,
+        }
+
         // Server-side only: every currently-spawned loot item, mirrors PlayerController.
         // ActiveServerPlayers — lets PlayerController's grip-request handler find the
         // nearest ungripped-by-me item without a scene-wide FindObjectsByType scan.
@@ -37,18 +54,28 @@ namespace CubeArena.Shared
 
         private Rigidbody _rigidbody;
 
-        // Server-only: per-instance so Milestone 4's other three items (different
-        // requiredCarriers/value) are just more instances of this same class, not a
+        // Server-only: per-instance so Milestone 4's other four items (different
+        // requiredCarriers/value/kind) are just more instances of this same class, not a
         // fork of it. Set via ServerInitialize, before Spawn (same convention as
         // PickupController/CrateController's own ServerInitialize).
         private int _requiredCarriers;
         private int _value;
+
+        private readonly NetworkVariable<LootKind> _kind = new(
+            writePerm: NetworkVariableWritePermission.Server);
 
         // Server-only: clientId -> the gripping player's own PlayerController, so the
         // per-tick average (below) can read live positions without a lookup each time,
         // and so a bank/despawn can tell every current gripper to clear their own grip
         // state (see PlayerController.ServerClearGrip).
         private readonly Dictionary<ulong, PlayerController> _grippers = new();
+
+        // Server-only: set by ServerShove, cleared once free-fall settles enough to be
+        // re-grippable normally again. While true, FixedUpdate does nothing at all and
+        // lets Unity's own Rigidbody physics (gravity + collision, already enabled -
+        // Server AuthorityMode leaves the server's own copy non-kinematic) carry the item
+        // off the table edge for real, rather than a scripted glide — see ServerShove.
+        private bool _isFreeFalling;
 
         private static LootSettings _lootSettings;
 
@@ -71,6 +98,8 @@ namespace CubeArena.Shared
             {
                 ActiveServerLootItems.Add(this);
             }
+
+            ApplyVisual(_kind.Value);
         }
 
         public override void OnNetworkDespawn()
@@ -96,11 +125,12 @@ namespace CubeArena.Shared
 
         // Server-only: called right after Instantiate, before Spawn — same ordering as
         // PickupController/CrateController's own ServerInitialize.
-        public void ServerInitialize(Vector3 position, int requiredCarriers, int value)
+        public void ServerInitialize(Vector3 position, int requiredCarriers, int value, LootKind kind)
         {
             transform.position = position;
             _requiredCarriers = requiredCarriers;
             _value = value;
+            _kind.Value = kind;
         }
 
         // Server-only: called by PlayerController's grip-toggle handler once it's found
@@ -109,6 +139,7 @@ namespace CubeArena.Shared
         // membership.
         public bool ServerAddGripper(ulong clientId, PlayerController player)
         {
+            _isFreeFalling = false; // re-gripping mid-fall (e.g. off the floor after a shove) resumes normal control
             _grippers[clientId] = player;
             return true;
         }
@@ -117,11 +148,37 @@ namespace CubeArena.Shared
         // by ServerBootstrap-driven disconnect cleanup (PlayerController.OnNetworkDespawn).
         // A carrier disconnecting or letting go mid-carry just shrinks this set — the
         // per-tick average below recomputes from whoever's left, which is what "the item
-        // continues (fewer carriers) or drops to a drag/fall" actually reduces to, with
-        // no separate disconnect-specific code path.
+        // continues (fewer carriers) or drops to a drag" actually reduces to, with no
+        // separate disconnect-specific code path.
         public void ServerRemoveGripper(ulong clientId)
         {
             _grippers.Remove(clientId);
+        }
+
+        // Server-only: Milestone 4's "shove it off the edge" descent method
+        // (POCKET_HEIST_MASTER_PROMPT.md section 6) — called by PlayerController's shove
+        // request handler. Clears every gripper (loot is never both gripped and
+        // free-falling) and hands the item to real Rigidbody physics with an outward
+        // velocity, instead of the average-position glide FixedUpdate normally does.
+        //
+        // Milestone 5 TODO: this is where the brief's "+60 noise spike" (section 8) plugs
+        // in once the noise model exists — same hook-point pattern already left for
+        // under-staffed dragging.
+        public void ServerShove(Vector3 horizontalDirection)
+        {
+            foreach (var player in _grippers.Values)
+            {
+                player.ServerClearGrip();
+            }
+
+            _grippers.Clear();
+
+            _isFreeFalling = true;
+            _freeFallStartTime = Time.time;
+            var shoveSpeed = _lootSettings != null ? _lootSettings.ShoveSpeed : 6f;
+            _rigidbody.linearVelocity = horizontalDirection.normalized * shoveSpeed + Vector3.up * 1f;
+
+            Debug.Log($"[Loot] {name} shoved, velocity={_rigidbody.linearVelocity}");
         }
 
         private void FixedUpdate()
@@ -131,40 +188,58 @@ namespace CubeArena.Shared
                 return;
             }
 
-            var carrying = _grippers.Count >= _requiredCarriers && _grippers.Count > 0;
+            if (_isFreeFalling)
+            {
+                // Real Rigidbody physics (gravity + collision) is doing the work here -
+                // deliberately no MovePosition call while this is true. Considered
+                // "settled" once it's basically stopped moving; a max-duration safety
+                // net avoids a rare case (e.g. an odd collision angle) leaving it falling
+                // forever off the edge of the playable floor.
+                if (_rigidbody.linearVelocity.sqrMagnitude < 0.05f || Time.time - _freeFallStartTime > FreeFallMaxDuration)
+                {
+                    _isFreeFalling = false;
+                }
+
+                return;
+            }
 
             if (_grippers.Count == 0)
             {
-                // Nobody's gripping it — settle straight down to the floor if it was
-                // mid-air (the brief's "or falls according to the remaining count", for
-                // the specific case where the remaining count is zero), otherwise leave
-                // it exactly where it is. Reuses DragSpeed as the fall rate rather than
-                // adding a separate tunable for a case that's rare and not gameplay-critical.
-                var floorTarget = new Vector3(transform.position.x, GroundedHeight, transform.position.z);
-                var fallSpeed = _lootSettings != null ? _lootSettings.DragSpeed : 1.2f;
-                _rigidbody.MovePosition(Vector3.MoveTowards(_rigidbody.position, floorTarget, fallSpeed * Time.fixedDeltaTime));
-            }
-            else
-            {
-                var average = Vector3.zero;
-                foreach (var player in _grippers.Values)
+                // Nobody's gripping it and it's not mid-shove - leave it exactly where it
+                // is (real Rigidbody physics, not overridden by MovePosition, handles any
+                // remaining settling - e.g. a drag abandoned mid-slide off a raised
+                // surface). This also means an item dropped on the table stays on the
+                // table instead of being forced toward a hardcoded floor height, unlike
+                // Milestone 3's original version - see docs/DECISIONS.md.
+                if (_wasCarrying)
                 {
-                    average += player.transform.position;
+                    Debug.Log($"[Loot] {name} carrying=False grippers=0/{_requiredCarriers} pos={transform.position}");
                 }
 
-                average /= _grippers.Count;
-
-                var carryHeight = _lootSettings != null ? _lootSettings.CarryHeight : 1.2f;
-                var dragSpeed = _lootSettings != null ? _lootSettings.DragSpeed : 1.2f;
-                var carrySpeed = _lootSettings != null ? _lootSettings.CarrySpeed : 3.5f;
-
-                var targetY = carrying ? carryHeight : GroundedHeight;
-                var target = new Vector3(average.x, targetY, average.z);
-                var speed = carrying ? carrySpeed : dragSpeed;
-                _rigidbody.MovePosition(Vector3.MoveTowards(_rigidbody.position, target, speed * Time.fixedDeltaTime));
-
-                CheckBanking();
+                _wasCarrying = false;
+                return;
             }
+
+            var average = Vector3.zero;
+            foreach (var player in _grippers.Values)
+            {
+                average += player.transform.position;
+            }
+
+            average /= _grippers.Count;
+
+            var carrying = _grippers.Count >= _requiredCarriers;
+            var carryOffset = _lootSettings != null ? _lootSettings.CarryHeightOffset : 1.2f;
+            var dragOffset = _lootSettings != null ? _lootSettings.DragHeightOffset : 0.1f;
+            var dragSpeed = _lootSettings != null ? _lootSettings.DragSpeed : 1.2f;
+            var carrySpeed = _lootSettings != null ? _lootSettings.CarrySpeed : 3.5f;
+
+            var targetY = average.y + (carrying ? carryOffset : dragOffset);
+            var target = new Vector3(average.x, targetY, average.z);
+            var speed = carrying ? carrySpeed : dragSpeed;
+            _rigidbody.MovePosition(Vector3.MoveTowards(_rigidbody.position, target, speed * Time.fixedDeltaTime));
+
+            CheckBanking();
 
             if (carrying != _wasCarrying)
             {
@@ -180,10 +255,8 @@ namespace CubeArena.Shared
             }
         }
 
-        // Resting height for a flat coin whose collider is CoinThickness tall, centered
-        // on its own transform — half its thickness above y=0 so it sits flush on the
-        // floor instead of half-buried in it.
-        private const float GroundedHeight = CoinThickness / 2f;
+        private float _freeFallStartTime;
+        private const float FreeFallMaxDuration = 3f;
 
         private void CheckBanking()
         {
@@ -216,6 +289,36 @@ namespace CubeArena.Shared
             }
         }
 
+        // Placeholder visuals, differentiated by colour/size only (no jewelry/watch mesh
+        // in the imported KayKit set — see docs/DECISIONS.md). Runs identically on every
+        // client (including the server's own view), driven purely by the replicated
+        // `_kind`, the same "deterministic local application of replicated state" pattern
+        // PlayerController already uses for pose-driven visual squash.
+        private void ApplyVisual(LootKind kind)
+        {
+            var renderer = GetComponent<Renderer>();
+            if (renderer == null)
+            {
+                return;
+            }
+
+            switch (kind)
+            {
+                case LootKind.Ring:
+                    transform.localScale = new Vector3(RingRadius * 2f, CoinThickness / 2f, RingRadius * 2f);
+                    MaterialUtil.ApplyLitColor(renderer, new Color(0.95f, 0.95f, 0.85f)); // bright silver/white gold
+                    break;
+                case LootKind.Wristwatch:
+                    transform.localScale = new Vector3(WristwatchRadius * 2f, CoinThickness / 2f, WristwatchRadius * 2f);
+                    MaterialUtil.ApplyLitColor(renderer, new Color(0.25f, 0.25f, 0.3f)); // dark gunmetal
+                    break;
+                default:
+                    transform.localScale = new Vector3(CoinRadius * 2f, CoinThickness / 2f, CoinRadius * 2f);
+                    MaterialUtil.ApplyLitColor(renderer, new Color(1f, 0.85f, 0.1f)); // gold
+                    break;
+            }
+        }
+
         // Same runtime-prefab requirements as PlayerController.CreateTemplate — see its
         // comment for the full explanation (GlobalObjectIdHash + staying active).
         private const uint LootItemGlobalObjectIdHash = 0x100747E1;
@@ -223,19 +326,23 @@ namespace CubeArena.Shared
             typeof(NetworkObject).GetField("GlobalObjectIdHash", BindingFlags.NonPublic | BindingFlags.Instance);
         private static readonly Vector3 TemplateParkPosition = new(0f, -1000f, 0f);
 
-        // Flattened cylinder, tinted gold — a placeholder visual (real coin meshes are
-        // Milestone 4's "replace greybox with real assets" pass, per docs/PROGRESS.md).
+        // Flattened cylinder, tinted per LootKind (ApplyVisual) — placeholder visuals
+        // (real coin/ring/watch meshes are a future art pass, not this milestone's job).
         private const float CoinRadius = 0.4f;
+        private const float RingRadius = 0.25f;
+        private const float WristwatchRadius = 0.35f;
         private const float CoinThickness = 0.15f;
 
         public static GameObject CreateTemplate()
         {
             var root = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            root.name = "Loot_Coin";
+            root.name = "Loot_Item";
             root.transform.position = TemplateParkPosition;
             // A cylinder's default is 2m tall, 1m diameter — squash it into a coin.
+            // ApplyVisual overrides this per-instance once _kind replicates in, so this
+            // starting scale only matters for the parked template itself.
             root.transform.localScale = new Vector3(CoinRadius * 2f, CoinThickness / 2f, CoinRadius * 2f);
-            MaterialUtil.ApplyLitColor(root.GetComponent<Renderer>(), new Color(1f, 0.85f, 0.1f)); // gold, matches the old PickupController's color
+            MaterialUtil.ApplyLitColor(root.GetComponent<Renderer>(), new Color(1f, 0.85f, 0.1f));
 
             // CreatePrimitive(Cylinder) auto-adds a CapsuleCollider, which does not
             // handle this extreme a non-uniform squash correctly — under Unity's
@@ -255,7 +362,7 @@ namespace CubeArena.Shared
             rb.mass = 2f;
             rb.linearDamping = 0.5f;
             rb.angularDamping = 0.5f;
-            rb.constraints = RigidbodyConstraints.FreezeRotation; // a coin sliding/lifting shouldn't tumble — it's not being thrown or pushed, only ever moved via MovePosition
+            rb.constraints = RigidbodyConstraints.FreezeRotation; // held/dragged items shouldn't tumble; a shoved one still translates and falls correctly with rotation frozen
 
             // Default AuthorityModes.Server (not overridden, unlike CrateController's
             // deliberate .Owner) — the server is always who moves this, so this is

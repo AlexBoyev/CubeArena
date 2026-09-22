@@ -187,10 +187,14 @@ namespace CubeArena.Server
             // docs/DECISIONS.md.
             // SpawnPickups();
 
-            // Milestone 3's "the coin test" (POCKET_HEIST_MASTER_PROMPT.md section 12):
-            // exactly one loot item, the floor coin (2 carriers, value 10, per section
-            // 6's loot table). The other three items are Milestone 4's job.
-            SpawnFloorCoin();
+            // Milestone 4: the full loot set, per POCKET_HEIST_MASTER_PROMPT.md section
+            // 6's loot table (Milestone 3 shipped just the floor coin as "the coin test").
+            SpawnLootItem(KitchenBuilder.LootCoinSpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.WalletCoin1SpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.WalletCoin2SpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.WalletCoin3SpawnPosition, 2, 10, LootItem.LootKind.Coin);
+            SpawnLootItem(KitchenBuilder.RingSpawnPosition, 3, 50, LootItem.LootKind.Ring);
+            SpawnLootItem(KitchenBuilder.WristwatchSpawnPosition, 5, 120, LootItem.LootKind.Wristwatch);
         }
 
         private void OnApplicationQuit()
@@ -199,17 +203,11 @@ namespace CubeArena.Server
         }
 
         // Same shape as SpawnPickups — one shared template/hash, Instantiate +
-        // ServerInitialize + Spawn. Just the one coin this milestone (see
-        // docs/PROGRESS.md's Milestone 3 scope note); Milestone 4 adds the other three
-        // items the same way, each its own requiredCarriers/value.
-        private const int FloorCoinRequiredCarriers = 2;
-        private const int FloorCoinValue = 10;
-
-        private void SpawnFloorCoin()
+        // ServerInitialize + Spawn, called once per item in section 6's loot table.
+        private void SpawnLootItem(Vector3 position, int requiredCarriers, int value, LootItem.LootKind kind)
         {
             var instance = UnityEngine.Object.Instantiate(_lootItemTemplate);
-            instance.GetComponent<LootItem>().ServerInitialize(
-                KitchenBuilder.LootCoinSpawnPosition, FloorCoinRequiredCarriers, FloorCoinValue);
+            instance.GetComponent<LootItem>().ServerInitialize(position, requiredCarriers, value, kind);
             instance.GetComponent<NetworkObject>().Spawn();
         }
 

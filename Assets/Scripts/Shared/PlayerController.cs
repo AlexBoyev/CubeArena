@@ -401,6 +401,12 @@ namespace CubeArena.Shared
         // wrong window if a real client happens to be focused at the same time.
         public static bool BotModeEnabled;
 
+        // Bot mode only: which scripted routine RunBotBehavior runs — see
+        // ClientConfig.BotTestMode's declaration for the full explanation. "" (default,
+        // Milestone 3's coin-test routine) or "lootdescent" (Milestone 4's verification
+        // routine, RunLootDescentTestBotBehavior).
+        public static string BotTestMode = "";
+
         private void ReadAndSendInput()
         {
             if (BotModeEnabled)
@@ -456,6 +462,17 @@ namespace CubeArena.Shared
                 if (keyboard.eKey.wasPressedThisFrame)
                 {
                     RequestToggleGripServerRpc();
+                }
+
+                // Milestone 4's "shove it off the edge" descent method (section 6) — a
+                // distinct, deliberate action from the gentle E-release, only meaningful
+                // while already gripping something (RequestShoveLootServerRpc no-ops
+                // otherwise). Fast/instant and risky, unlike carrying it down the chair
+                // or lowering it down the tablecloth (both just the ordinary grip + climb
+                // path — see LootItem's gripper-relative carry height, docs/DECISIONS.md).
+                if (keyboard.fKey.wasPressedThisFrame)
+                {
+                    RequestShoveLootServerRpc();
                 }
             }
 
@@ -516,6 +533,12 @@ namespace CubeArena.Shared
 
         private void RunBotBehavior()
         {
+            if (BotTestMode == "lootdescent")
+            {
+                RunLootDescentTestBotBehavior();
+                return;
+            }
+
             _botStateTimer -= Time.deltaTime;
             _botGripRequestCooldown -= Time.deltaTime;
 
@@ -581,6 +604,103 @@ namespace CubeArena.Shared
             // relative to, since a bot has no camera.
             CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
         }
+
+        // Owner-client-side only, only reached when BotModeEnabled and BotTestMode ==
+        // "lootdescent" — Milestone 4's verification routine: climb to the table (reusing
+        // the exact Milestone 2 chair route, still proximity-gated and unchanged), grip a
+        // table-top loot item, then shove it off the edge. Exercises the two genuinely new
+        // pieces of code this milestone (a table-top grip, and ServerShove's real-physics
+        // fall) end-to-end, confirmed via the server's [Loot]/[Bank] log lines. Carrying an
+        // item down the chair/tablecloth instead of shoving isn't separately bot-tested —
+        // that path reuses the same already-proven climb code plus a height-tracking
+        // change validated by inspection, not a new movement path — see docs/DECISIONS.md.
+        private enum LootDescentPhase
+        {
+            ToChair,
+            ToItem, // walking this also carries the bot up the whole chair climb route en route — see below
+            Grip,
+            Shove,
+            Done,
+        }
+
+        private LootDescentPhase _lootDescentPhase;
+        private float _lootDescentActionCooldown;
+        private static Vector3 LootDescentChairWaypoint =>
+            new(KitchenBuilder.TableCenter.x - KitchenBuilder.TableWidth / 2f - 1.5f, 0f, KitchenBuilder.TableCenter.z);
+
+        private void RunLootDescentTestBotBehavior()
+        {
+            _lootDescentActionCooldown -= Time.deltaTime;
+
+            Vector3 target;
+            switch (_lootDescentPhase)
+            {
+                case LootDescentPhase.ToChair:
+                    target = LootDescentChairWaypoint;
+                    break;
+                case LootDescentPhase.ToItem:
+                    // Walking from the chair waypoint on toward the table-top item is
+                    // enough to carry the bot up the whole climb route on the way —
+                    // IsNearClimbable engages automatically based on proximity to any
+                    // Climbable collider, exactly like a real player (Milestone 2).
+                    target = KitchenBuilder.WalletCoin1SpawnPosition;
+                    break;
+                case LootDescentPhase.Grip:
+                    if (!_isGrippingLoot.Value)
+                    {
+                        if (_lootDescentActionCooldown <= 0f)
+                        {
+                            RequestToggleGripServerRpc();
+                            _lootDescentActionCooldown = 0.5f;
+                        }
+
+                        CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                        return;
+                    }
+
+                    _lootDescentPhase = LootDescentPhase.Shove;
+                    return;
+                case LootDescentPhase.Shove:
+                    if (_lootDescentActionCooldown <= 0f)
+                    {
+                        RequestShoveLootServerRpc();
+                        _lootDescentPhase = LootDescentPhase.Done;
+                    }
+
+                    CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                    return;
+                default:
+                    CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                    return;
+            }
+
+            var toTarget = target - transform.position;
+            var toTargetXZ = new Vector3(toTarget.x, 0f, toTarget.z);
+
+            if (_lootDescentPhase == LootDescentPhase.ToChair && toTargetXZ.magnitude <= WaypointSwitchDistance)
+            {
+                _lootDescentPhase = LootDescentPhase.ToItem;
+                return;
+            }
+
+            if (_lootDescentPhase == LootDescentPhase.ToItem && toTarget.magnitude <= WaypointSwitchDistance)
+            {
+                _lootDescentPhase = LootDescentPhase.Grip;
+                return;
+            }
+
+            if (toTargetXZ.sqrMagnitude < 0.01f)
+            {
+                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                return;
+            }
+
+            var direction = toTargetXZ.normalized;
+            var facingYaw = Quaternion.LookRotation(direction, Vector3.up).eulerAngles.y;
+            CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
+        }
+
+        private const float WaypointSwitchDistance = 3f;
 
         private LootItem FindNearestVisibleLootItem()
         {
@@ -794,6 +914,25 @@ namespace CubeArena.Shared
             nearest.ServerAddGripper(OwnerClientId, this);
             _grippedLootItemServer = nearest;
             _isGrippingLoot.Value = true;
+        }
+
+        // Milestone 4's "shove it off the edge" descent method — no-ops unless this
+        // player is already gripping something (a shove without a grip makes no sense;
+        // grip first via E, then shove via F). Direction is the player's own facing so a
+        // shove sends the item outward the way the player's actually facing at the table
+        // edge, not just straight down.
+        [ServerRpc]
+        private void RequestShoveLootServerRpc()
+        {
+            if (_grippedLootItemServer == null)
+            {
+                return;
+            }
+
+            var item = _grippedLootItemServer;
+            _grippedLootItemServer = null;
+            _isGrippingLoot.Value = false;
+            item.ServerShove(transform.forward);
         }
 
         private static float SpeedMultiplierFor(PlayerPose pose) => pose switch

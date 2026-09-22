@@ -4,7 +4,85 @@ Read this first in any new session. Current milestone, what's done, what's
 next, known issues. Updated after every completed step per
 `AUTONOMOUS_RUN.md`.
 
-## Status: Milestone 4 (real assets, lighting, full loot, descent methods) in progress
+## STOPPED: Milestone 4 code complete but unverified live — a real, unrelated
+## infrastructure blocker, per AUTONOMOUS_RUN.md section 3 rule 3 (three
+## genuine fix attempts, none solved it)
+
+**What's stopped, and why**: all of Milestone 4's code is written and
+compiles cleanly in both a fresh client and dedicated server build (confirmed
+byte-present in both — see below), and the backend suite is still 59/59. But
+the milestone's required live bot-mode verification (and therefore also the
+Play-mode screenshot, which needs a live server to connect to) could not run:
+launching *any* dedicated server right now hangs forever on
+`FleetClient.RegisterAsync` — specifically inside `PostAsync`'s
+`UnityWebRequest` POST to `/fleet/register`, confirmed via bracketing
+diagnostic logging (`Debug.Log` calls added and removed again around every
+step of `ServerBootstrap.RunAsync`) that execution reaches "before
+FleetClient.RegisterAsync" and never reaches "after." This is **not** a bug
+in this milestone's own diff — `FleetClient.cs` is completely unmodified —
+and this exact registration path demonstrably worked earlier in this same
+session (the Milestone 3 fork's live 2-bot banking test, and this Milestone
+4 fork's own earlier work, both required a dedicated server to have
+registered successfully). Something changed in the environment partway
+through this very long session, most likely from the sheer number of Unity
+batch processes started and force-killed today (build hangs, stalled
+processes, etc. — see the session record).
+
+**Three genuine fix attempts, all failed** (per AUTONOMOUS_RUN.md's own
+"don't loop" rule, stopping here rather than trying a fourth):
+1. Pointed the server at `http://127.0.0.1:8080` instead of
+   `http://localhost:8080` (ruling out a DNS/hostname-resolution quirk) —
+   same hang.
+2. Restarted the backend's Docker container (`docker compose restart api`)
+   to rule out a degraded Kestrel-side connection/thread-pool state — same
+   hang, even though a direct `curl -X POST` to the exact same endpoint,
+   with the exact same headers, from the exact same machine, at the exact
+   same time, succeeded instantly (200, ~27ms) — this rules out the backend
+   itself being unhealthy.
+3. Set `UploadHandlerRaw.contentType` explicitly (a known Unity gotcha:
+   relying only on a manually-set `Content-Type` *header* without also
+   setting the upload handler's own `contentType` property can leave a
+   `UnityWebRequest`'s body-framing metadata inconsistent in some versions)
+   — rebuilt, retested, same hang. Reverted this change since it didn't
+   help and I don't want an unverified "fix" claim sitting in the code —
+   `FleetClient.cs` is back to byte-identical with what Milestone 3 shipped.
+
+**What I could confirm independently of the live test**: both the client
+and dedicated server executables were rebuilt after every source change and
+searched directly for Milestone 4 symbol names in their compiled managed
+DLLs (`ServerShove`, `WristwatchSpawnPosition`, `LootDescentPhase`,
+`TablecloudClimb`, `RunLootDescentTestBotBehavior`, `BotTestMode` — all
+present in both builds), so the actual code is real and built correctly;
+what's unverified is only its *runtime networked behavior*. Backend suite:
+59/59.
+
+**What a fresh session (or you) should do next**: this is squarely a "stop
+and tell me" case per AUTONOMOUS_RUN.md section 3 rule 3, not something to
+keep guessing at. Likely worth trying, roughly in order of cheapness: (a) a
+full reboot of this machine (clears any accumulated Windows-level socket/
+handle state from today's many force-killed Unity processes — my
+`Get-NetTCPConnection` check didn't show obvious exhaustion, but it's the
+cheapest thing that rules out a wide class of causes at once), (b) if that
+doesn't fix it, checking whether the *client* build can register with the
+*same* backend right now (isolates whether this is specific to headless
+`-batchmode -nographics` server builds or affects any Unity process), (c)
+capturing a packet trace (`netstat`/Wireshark) on the hung POST's specific
+TCP connection to see whether the request body is actually leaving the
+process at all — if Wireshark shows a fully-sent, well-formed HTTP request
+with a correct `Content-Length` and the response never arrives, that
+implicates the backend/Docker networking layer despite the curl test;
+if the request itself is incomplete/never sent, that implicates Unity's
+own `UnityWebRequest`/networking module specifically.
+
+Once resolved: re-run this milestone's live bot-mode verification (chair
+climb still works with real geometry, a new loot item can be gripped/
+carried/banked, the shove descent path works via the new `lootdescent` bot
+test mode — `CUBEARENA_BOT_TEST_MODE=lootdescent`), capture and inspect a
+Play-mode screenshot, then finish per the usual pattern (this file,
+docs/DECISIONS.md, docs/PLAYTEST.md, commit, push).
+
+## Status: Milestone 4 (real assets, lighting, full loot, descent methods) —
+## code complete, live verification blocked (see above)
 
 ### Milestone 1 — done, on `pocket-heist` (not merged to master yet —
 ### per AUTONOMOUS_RUN.md section 2, master gets it only at Milestone 6's end)
@@ -354,9 +432,84 @@ kitchen, and all descent methods work" (playtest).
    Playtest done-criterion is explicit that all three must stay viable,
    not just work — don't let one trivially dominate the other two.
 
-Not yet planned further than this — implementation delegated to a fork,
-same pattern as Milestones 2 and 3. This file, docs/DECISIONS.md, and
-docs/PLAYTEST.md get updated with the real outcome once it reports back.
+**Built** (see the STOPPED notice at the top of this file for why live
+verification is outstanding):
+
+1. **Real geometry, layered over unchanged Milestone 2 collision.** 10 new
+   wrapper prefabs under `Assets/Resources/Kitchen/` (built by
+   `Assets/Editor/PocketHeist/KitchenAssetPrefabBuilder.cs`, same
+   runtime-loadable-wrapper convention as `GiantModel_Placeholder`) nest
+   the real KayKit `kitchentable_A_large`/`chair_A`/`fridge_A`/
+   `kitchencounter_straight_A`/`kitchencounter_sink`/`wall`/
+   `wall_window_closed`/`wall_doorway`/`door_A` and the Kenney `rugRectangle`
+   models. `KitchenBuilder.cs` now instantiates these as **purely visual**
+   dressing (their own colliders stripped) positioned/scaled to align with
+   the exact same invisible primitive colliders and `Climbable` zones
+   Milestone 2 already validated — deliberately *not* re-deriving climb/
+   collision geometry from the real meshes' own bounds (the chair especially
+   is a single unlabelled mesh with no discoverable seat sub-part), to avoid
+   risking the working climb route for a cosmetic gain. Table/chair visual
+   scale is derived from real probed mesh dimensions to land at the exact
+   `TableTopHeight`/`ChairSeatHeight` anchors; fridge/counter get their own
+   real `BoxCollider`s (non-climb items, safe to fully replace); walls stay
+   collision-primitive with a single real wall panel stretched per segment
+   (tiling many modules was descoped — see docs/DECISIONS.md).
+   Food/tableware set-dressing props (plate, burger, pot, etc.) were
+   descoped entirely this pass — explicitly nice-to-have per the plan above,
+   and this milestone already grew large from the loot/descent-method work.
+2. **Vertex-colour URP shader**: `Assets/Shaders/VertexColorURP.shader`, a
+   hand-written HLSL forward-lit pass (URP main-light Lambertian, not full
+   PBR) reading per-vertex colour — built as plain shader source rather
+   than a Shader Graph asset since Shader Graphs are authored interactively
+   in the Editor, not scriptable/batch-buildable like everything else in
+   this project. Compiled clean, applied to a new `RugVertexColor.mat`
+   referenced by `Kitchen_Rug.prefab`.
+3. **Lighting pass**: moonlight (directional, cool blue, shadows on,
+   angled through the window), fridge spot (warm yellow), a static phone
+   point light (cold white — no pulse/search-cone yet, that's Milestone
+   6's state-machine job), very dark blue ambient, and a URP volume (low
+   bloom, vignette, subtle film grain, depth fog). Dust particles in the
+   moonbeam were skipped (nice-to-have).
+4. **Full loot set**: `ServerBootstrap` now spawns all six items from
+   section 6's loot table (the Milestone 3 floor coin plus 3 wallet coins,
+   the ring, the wristwatch) as `LootItem` instances with a new `LootKind`
+   enum (`Coin`/`Ring`/`Wristwatch`) driving purely cosmetic per-kind
+   colour/size (no jewelry/watch meshes in the imported KayKit set —
+   placeholders, same as the floor coin already was).
+5. **All three descent methods.** The chair climb (Milestone 2) is
+   unchanged. The other two share one underlying fix, not two separate
+   systems: `LootItem`'s carried/dragged height is now the *grippers' own
+   current Y* plus a small offset, instead of a fixed absolute height —
+   this alone makes carrying an item down the chair (or the new tablecloth
+   route) work automatically, since a gripper's own climbing already moves
+   them in 3D and the item just follows. **Tablecloth**: a new second
+   `Climbable` zone at the table's east edge, spanning floor-to-table-top
+   directly rather than literally stopping "~5m above the floor" (see
+   docs/DECISIONS.md). **Shove**: a new F key (while gripping) calls
+   `LootItem.ServerShove`, which clears all grippers and hands the item to
+   real, un-overridden Rigidbody physics with an outward+upward velocity —
+   `FixedUpdate` was restructured so the "nobody's gripping it" case no
+   longer force-glides the item toward a hardcoded floor height every tick
+   (the Milestone 3 version), which also fixes a latent bug where a
+   dropped table-top item would have sunk straight through the table
+   toward the floor. The Milestone 5 noise-spike hook point (+60 on shove)
+   is left as an explicit comment, matching the pattern Milestone 3 already
+   established for under-staffed-drag noise.
+6. **New bot-mode verification routine**: `CUBEARENA_BOT_TEST_MODE=lootdescent`
+   drives a bot through climb-to-table → grip a table-top item → shove —
+   built specifically to verify this milestone's two genuinely new code
+   paths (a table-top grip, and `ServerShove`'s real-physics fall)
+   end-to-end via server log, the same way Milestone 2's climb-test and
+   Milestone 3's coin-test bots verified those. **Not yet actually run** —
+   blocked by the infrastructure issue at the top of this file.
+
+**Verified so far**: both client and dedicated server rebuild with zero
+compile errors; the compiled DLLs contain every new Milestone 4 symbol
+(checked directly, not assumed); backend suite 59/59. **Not verified**:
+anything requiring a live server connection (the whole point of this
+milestone's playtest bar — "the kitchen looks like the kitchen" needs an
+actual screenshot, and "all descent methods work" needs the bot-mode
+routines above to actually run).
 
 ## Milestone 2 plan
 

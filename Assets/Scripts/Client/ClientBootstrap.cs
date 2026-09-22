@@ -108,6 +108,7 @@ namespace CubeArena.Client
         {
             _config = ClientConfig.FromEnvironment();
             PlayerController.BotModeEnabled = _config.BotModeEnabled;
+            PlayerController.BotTestMode = _config.BotTestMode;
 
             KitchenBuilder.Build();
             BuildUi();

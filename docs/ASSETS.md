@@ -124,16 +124,39 @@ separate clothing material slot this script doesn't handle. Cosmetic only,
 doesn't block judging the pose; revisit whenever this placeholder is
 actually replaced (see "Placeholder character structure" above).
 
-### Vertex-colour note (Kenney Furniture Kit)
+### Vertex-colour note (Kenney Furniture Kit) — resolved in Milestone 4
 
 This kit (2018 vintage) has no texture atlas at all — models are coloured
-via vertex colour data baked into the mesh. A standard URP/Lit material
-doesn't read vertex colour by default; this needs either a small Shader
-Graph (Vertex Color node → Base Color) or an unlit vertex-colour shader
-before `rugRectangle` renders with its intended colours instead of flat
-white/grey. Not yet built — tracked for whichever milestone first actually
-places this rug in the level (Milestone 4, "replace greybox with real
-assets"), not blocking the import itself.
+via vertex colour data baked into the mesh, which a standard URP/Lit
+material doesn't read. Built `Assets/Shaders/VertexColorURP.shader`, a
+hand-written HLSL forward-lit pass (URP main-light Lambertian, not full
+PBR — a deliberate placeholder-tier simplification, see docs/DECISIONS.md)
+that reads the mesh's vertex colour as base colour. Plain shader source
+rather than a Shader Graph asset, since Shader Graphs are authored
+interactively in the Editor and aren't scriptable/batch-buildable the way
+everything else in this project is built. Applied via a new
+`RugVertexColor.mat` material, referenced by `Kitchen_Rug.prefab`.
+
+### Milestone 4: KayKit Restaurant Bits models placed in the level
+
+The 19 curated KayKit models (table above) are raw `.gltf` imports under
+`Assets/ThirdParty/`, not runtime-loadable directly (`Resources.Load` only
+reaches assets under a `Resources/` folder, and `AssetDatabase` — the
+obvious alternative — is Editor-only, unusable in the actual client/server
+builds `KitchenBuilder.Build()` runs in). `Assets/Editor/PocketHeist/
+KitchenAssetPrefabBuilder.cs` wraps each needed model (table, chair,
+fridge, both counter variants, three wall variants, door, plus the Kenney
+rug) in a thin runtime-loadable prefab under `Assets/Resources/Kitchen/`,
+the same "wrapper prefab nests one instance of the raw import" convention
+already used for `GiantModel_Placeholder`/`ThiefModel_Placeholder`. Every
+wrapper strips any collider from the raw import — see docs/DECISIONS.md
+for how collision/climbing is handled instead (kept on Milestone 2's
+already-verified invisible primitives, not re-derived from the real
+meshes). The food/tableware half of the 19-model set (plate, burger, pot,
+pan, jar, knife, cuttingboard, stove) was **not** placed this pass —
+explicitly nice-to-have set dressing, descoped under this milestone's time
+budget in favour of the loot/descent-method work — still available in
+`Assets/ThirdParty/KayKit-RestaurantBits/` for a future pass.
 
 ## Not imported (kept as source-only reference)
 
