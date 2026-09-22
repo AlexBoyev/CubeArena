@@ -6,6 +6,62 @@ chosen, why. Newest first.
 
 ---
 
+## Climb zones as single continuous `Climbable` segments, not sub-staged
+
+**Options**: (a) one `Climbable`-marked collider per major surface
+transition (chair leg, seat-to-table strip), climbed as one continuous
+motion within each; (b) many small sub-stage colliders (individual "rungs")
+with per-rung logic; (c) a spline/path-based climb.
+
+**Chosen**: (a). The brief's own route description ("leg → rung → seat →
+table edge") reads as flavour text for a single continuous climb, not a
+literal per-rung mechanic — Cube Arena/Pocket Heist has no existing
+path-following code to build (c) on, and (b) adds bookkeeping (which rung
+is "current," transition logic between them) for no gameplay benefit over
+just letting `Vector3.Dot`-projected input move the player continuously
+while inside any `Climbable` zone. Verified working end-to-end via bot-mode
+test (see docs/PROGRESS.md Milestone 2). Known imperfection: brief flicker
+of `_isClimbing` right at zone boundaries — cosmetic, not fixed yet.
+
+---
+
+## `FindNearestVisibleCrate` must check `IsSpawned`, not just gameplay state
+
+Found while debugging the climb-mechanic bot test: every client keeps a
+parked-but-active `NetworkBehaviour` template instance for each runtime
+prefab (`PlayerController.CreateTemplate`, `PickupController.CreateTemplate`,
+`CrateController`'s equivalent) — required by NGO, since a prefab template
+must stay active in the scene to register via `AddNetworkPrefab`.
+`FindObjectsByType<T>()` scans **will** find these templates. Checking only
+gameplay-state fields on them (e.g. `IsHeld`, which reads `false` for a
+never-spawned object since `OwnerClientId` defaults to 0 = the server's own
+id) silently treats the template as a real, valid object — in this case
+causing a bot to walk toward the template's parked position instead of a
+real target. **Rule going forward: any `FindObjectsByType` scan over a
+runtime-prefab type must also check `.IsSpawned` before treating a result
+as real.** Recorded here since it's a general bug class, not specific to
+crates — worth checking any future bot/AI targeting code that does a type
+scan.
+
+---
+
+## Pickup/crate spawning disabled, not removed, pending Milestone 3
+
+`ServerBootstrap`'s `SpawnPickups()`/`SpawnCrates()` calls are commented
+out rather than deleted, and `PickupController`/`CrateController`/
+`ArenaBuilder` are left in the tree unreferenced rather than deleted now.
+
+**Why**: AUTONOMOUS_RUN.md's scope for this run explicitly calls for
+redesigning the loot layer in Milestone 3 (single-owner → server-owned
+multi-carrier), and section 11 of the master prompt separately calls for
+removing dead Cube Arena gameplay. Doing the removal now, before the
+redesign exists, risks deleting code/patterns (the `NetworkVariable`
+position-replication convention, the runtime-prefab-template convention)
+that the Milestone 3 rebuild will want to reference or reuse. Full removal
+is deferred to align with that milestone instead of happening twice.
+
+---
+
 ## Placeholder character mesh: Quaternius `Superhero_Male_FullBody`
 
 **Options**: (a) buy the Quaternius SOURCE tier to get the brief's assumed

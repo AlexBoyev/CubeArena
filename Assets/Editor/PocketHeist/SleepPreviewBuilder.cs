@@ -206,6 +206,16 @@ namespace PocketHeist.EditorTools
         // Wrapper prefab: scale/role live here, the actual model is a nested
         // prefab instance - swapping meshes later is repointing this nested
         // instance to a different model prefab, not rebuilding this wrapper.
+        // Saved under Assets/Resources/ (not PrefabDir, where everything else this
+        // script builds lives) specifically so runtime code - KitchenBuilder's static
+        // giant placeholder, and eventually the real thief gameplay prefab - can load
+        // it via Resources.Load. Keeping the save path here in sync with where runtime
+        // code actually loads from avoids a stale duplicate accumulating at the old
+        // ThirdParty path on a future rerun (which is exactly what happened the first
+        // time this was built, before Resources.Load-ability was needed - see
+        // RelocatePrefabsToResources.cs for the one-off cleanup that fixed that).
+        private const string ResourcesDir = "Assets/Resources";
+
         private static GameObject BuildWrapperPrefab(GameObject modelPrefab, string wrapperName, float scale)
         {
             var root = new GameObject(wrapperName);
@@ -214,7 +224,8 @@ namespace PocketHeist.EditorTools
             modelInstance.transform.localPosition = Vector3.zero;
             modelInstance.transform.localRotation = Quaternion.identity;
 
-            var prefabPath = $"{PrefabDir}/{wrapperName}.prefab";
+            Directory.CreateDirectory(ResourcesDir);
+            var prefabPath = $"{ResourcesDir}/{wrapperName}.prefab";
             var prefab = PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
             Object.DestroyImmediate(root);
             return prefab;

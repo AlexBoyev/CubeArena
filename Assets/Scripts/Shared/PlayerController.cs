@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using CubeArena.Shared.Tuning;
 using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
@@ -74,6 +75,11 @@ namespace CubeArena.Shared
         private readonly NetworkVariable<bool> _sprintHeld = new(
             writePerm: NetworkVariableWritePermission.Server);
 
+        // Server-authoritative: whether this tick's movement used climb mode instead of
+        // normal grounded movement. See the "Climbing" section below.
+        private readonly NetworkVariable<bool> _isClimbing = new(
+            writePerm: NetworkVariableWritePermission.Server);
+
         // Server-authoritative sprint resource — only SimulateMovement (server) ever
         // writes it; the owner's own prediction only reads it (to decide whether it's
         // allowed to predict a sprint speed boost), never spends it locally, so there's
@@ -115,6 +121,16 @@ namespace CubeArena.Shared
         // facing is the camera's own yaw).
         private readonly NetworkVariable<float> _facingYaw = new(
             writePerm: NetworkVariableWritePermission.Server);
+
+        // Milestone 2 diagnostic - see the periodic [Pos] log in SimulateMovement.
+        private float _lastPositionLogTime;
+
+        // Loaded once, shared by every PlayerController instance (client and server both
+        // load their own copy of the same asset — see ClimbSettings.cs). Null-checked at
+        // each use site with a hardcoded fallback rather than assumed non-null, in case
+        // the Resources asset is ever missing (e.g. a fresh checkout before
+        // ClimbSettingsAssetCreator has been run).
+        private static ClimbSettings _climbSettings;
 
         private CharacterController _characterController;
         private Renderer[] _renderers;
@@ -163,6 +179,11 @@ namespace CubeArena.Shared
 
         private void Awake()
         {
+            if (_climbSettings == null)
+            {
+                _climbSettings = Resources.Load<ClimbSettings>("ClimbSettings");
+            }
+
             _characterController = GetComponent<CharacterController>();
             _renderers = GetComponentsInChildren<Renderer>();
 
@@ -483,9 +504,16 @@ namespace CubeArena.Shared
                 _botStateTimer = 6f; // give up and re-pick after this long regardless
             }
 
+            // No crates exist while Milestone 3's loot redesign is pending (see
+            // ServerBootstrap - SpawnCrates is disabled), so bots fall back to a fixed
+            // climb-route test target instead of idling: this is the actual Milestone 2
+            // verification mechanism (walk from the mousehole, through the chair's
+            // climbable leg, onto the seat, up the seat-to-table climb, onto the table
+            // top), driven entirely by this same crate-seeking movement code with a
+            // different destination - not bespoke climb-specific bot logic.
             if (_botTargetCrate == null)
             {
-                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                RunClimbTestBotBehavior();
                 return;
             }
 
@@ -524,7 +552,19 @@ namespace CubeArena.Shared
             var nearestDistSqr = float.MaxValue;
             foreach (var crate in crates)
             {
-                if (crate.IsHeld)
+                // Every client keeps one never-spawned CrateController template parked
+                // at (0,-1000,0) purely so NGO has something to register as a network
+                // prefab (see CrateController.CreateTemplate, same convention as
+                // PlayerController's own template) - kept *active* in the scene (NGO
+                // requires that), which means a plain FindObjectsByType scan picks it
+                // up like a real crate. IsHeld doesn't filter it out either: a
+                // never-spawned NetworkObject's OwnerClientId defaults to 0, which is
+                // also NetworkManager.ServerClientId, so it reads as "not held".
+                // First Milestone 2 climb-route bot test walked every bot straight to
+                // this template's (0, z=0) horizontal position instead of the actual
+                // climb-test waypoints - IsSpawned is what actually distinguishes a
+                // real, network-spawned crate from this template.
+                if (!crate.IsSpawned || crate.IsHeld)
                 {
                     continue;
                 }
@@ -538,6 +578,58 @@ namespace CubeArena.Shared
             }
 
             return nearest;
+        }
+
+        // Two ground-level waypoints, same Z as the chair so a direct path actually
+        // passes through it (a path straight from the mousehole to the table's own
+        // center does not — the diagonal only reaches the chair's Z right at the very
+        // end, well past the chair's X). Switches to the table once within a few
+        // meters of the chair rather than exactly on top of it, so forward input never
+        // drops to zero while still inside the leg's climbable zone. Climbing itself
+        // needs no special-case bot code at all: ComputeClimbMove only ever consumes
+        // the up/right components of world input while _isClimbing (see
+        // SimulateMovement), never resolving horizontal distance-to-target, so the
+        // exact same "walk toward target, don't stop until arrived" logic that
+        // chases crates keeps pressing forward into the climbable surface for the
+        // whole climb.
+        // Computed on demand, not as static readonly fields initialized from
+        // KitchenBuilder's own static fields: a first attempt at this had both bots
+        // walking straight for world-origin (0,0,0) instead of the chair, traced back
+        // to C#'s "beforefieldinit" semantics - a type with no explicit static
+        // constructor (both KitchenBuilder and PlayerController qualify) gives the
+        // runtime latitude to run its static field initializers any time before first
+        // use, not strictly "before the first class that references it", so
+        // PlayerController's own static fields ended up reading KitchenBuilder.
+        // TableCenter as its default Vector3.zero instead of (10,0,15). Local
+        // properties evaluated at call time (well after KitchenBuilder.Build() has
+        // long since run) sidestep the whole cross-class static-init-order question.
+        private static Vector3 ClimbTestWaypointChair =>
+            new(KitchenBuilder.TableCenter.x - KitchenBuilder.TableWidth / 2f - 1.5f, 0f, KitchenBuilder.TableCenter.z);
+        private static Vector3 ClimbTestWaypointTable => KitchenBuilder.TableCenter;
+        private const float WaypointSwitchDistance = 3f;
+        private bool _climbTestReachedChair;
+
+        private void RunClimbTestBotBehavior()
+        {
+            var target = _climbTestReachedChair ? ClimbTestWaypointTable : ClimbTestWaypointChair;
+            var toTarget = target - transform.position;
+            toTarget.y = 0f;
+
+            if (!_climbTestReachedChair && toTarget.magnitude <= WaypointSwitchDistance)
+            {
+                _climbTestReachedChair = true;
+                return; // re-evaluate next frame against the new (table) target
+            }
+
+            if (toTarget.sqrMagnitude < 0.01f)
+            {
+                CommitWorldInputAndFacing(Vector2.zero, transform.eulerAngles.y);
+                return;
+            }
+
+            var direction = toTarget.normalized;
+            var facingYaw = Quaternion.LookRotation(direction, Vector3.up).eulerAngles.y;
+            CommitWorldInputAndFacing(new Vector2(direction.x, direction.z), facingYaw);
         }
 
         private static Vector2 CameraRelativeXZ(Vector2 input)
@@ -595,27 +687,40 @@ namespace CubeArena.Shared
                 _predictedJumpRequested = false;
             }
 
-            var grounded = _characterController.isGrounded;
-            if (_predictedJumpRequested && grounded)
+            // Mirrors SimulateMovement's climb branch — see its comment. Predicted purely
+            // locally (IsNearClimbable reads real colliders, same on both sides), same as
+            // every other predicted movement here; the reconcile below still absorbs any
+            // mismatch against the server's own climbing decision.
+            var predictedClimbing = matchActive && _predictedEffectivePose == PlayerPose.Standing && IsNearClimbable();
+            if (predictedClimbing)
             {
-                _predictedVerticalVelocity = MovementConstants.JumpSpeed;
-                _predictedJumpRequested = false;
-            }
-            else if (grounded)
-            {
-                if (_predictedVerticalVelocity < 0f)
-                {
-                    _predictedVerticalVelocity = -2f;
-                }
+                _predictedVerticalVelocity = 0f;
+                _characterController.Move(ComputeClimbMove(predictedInput, Time.deltaTime));
             }
             else
             {
-                _predictedVerticalVelocity += MovementConstants.Gravity * Time.deltaTime;
-            }
+                var grounded = _characterController.isGrounded;
+                if (_predictedJumpRequested && grounded)
+                {
+                    _predictedVerticalVelocity = MovementConstants.JumpSpeed;
+                    _predictedJumpRequested = false;
+                }
+                else if (grounded)
+                {
+                    if (_predictedVerticalVelocity < 0f)
+                    {
+                        _predictedVerticalVelocity = -2f;
+                    }
+                }
+                else
+                {
+                    _predictedVerticalVelocity += MovementConstants.Gravity * Time.deltaTime;
+                }
 
-            var move = new Vector3(predictedInput.x, 0, predictedInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * Time.deltaTime)
-                       + Vector3.up * (_predictedVerticalVelocity * Time.deltaTime);
-            _characterController.Move(move);
+                var move = new Vector3(predictedInput.x, 0, predictedInput.y) * (MovementConstants.MoveSpeed * speedMultiplier * Time.deltaTime)
+                           + Vector3.up * (_predictedVerticalVelocity * Time.deltaTime);
+                _characterController.Move(move);
+            }
 
             var error = _serverPosition.Value - transform.position;
             if (error.sqrMagnitude > ReconcileSnapThresholdSqr)
@@ -800,6 +905,40 @@ namespace CubeArena.Shared
                 _jumpRequested = false; // no queued jump carries over into the match starting
             }
 
+            // Climbing takes over movement entirely for this tick — gravity/jump/normal
+            // horizontal movement are all skipped while it's active. Only reachable while
+            // the match is active (matchActive gates horizontalInput above; a Climbable
+            // in range during the lobby doesn't let a player start climbing before the
+            // host starts the match) and only while standing (crouch/crawl height changes
+            // and climbing don't need to interact for this milestone's scope).
+            var climbing = matchActive && effectivePose == PlayerPose.Standing && IsNearClimbable();
+            if (climbing != _isClimbing.Value)
+            {
+                Debug.Log($"[Climb] {DisplayName} climbing={climbing} y={transform.position.y:F2}");
+            }
+
+            // Milestone 2 diagnostic: periodic position trace so the climb-route
+            // verification is debuggable from the server log instead of guessing from
+            // bandwidth numbers alone. BotModeEnabled is a client-side-only static (each
+            // process has its own copy), unset on the server, so it can't gate this
+            // server-side log - unconditional instead, cheap at one line per ~2s per
+            // connected player.
+            if (Time.time - _lastPositionLogTime > 2f)
+            {
+                _lastPositionLogTime = Time.time;
+                Debug.Log($"[Pos] {DisplayName} pos={transform.position} climbing={_isClimbing.Value}");
+            }
+
+            _isClimbing.Value = climbing;
+
+            if (climbing)
+            {
+                _verticalVelocity = 0f; // no gravity carries over into a subsequent fall
+                _characterController.Move(ComputeClimbMove(horizontalInput, deltaTime));
+                _serverPosition.Value = transform.position;
+                return;
+            }
+
             var grounded = _characterController.isGrounded;
 
             // _jumpRequested is only cleared once it's actually consumed below, not
@@ -914,6 +1053,60 @@ namespace CubeArena.Shared
             }
 
             return true;
+        }
+
+        // Climbing: a distinct movement mode (not a PlayerPose tier — it's about *how*
+        // the character moves, not how tall its collider is) for scaling the chair
+        // (docs/GAME_DESIGN.md section 3's "leg -> rung -> seat -> table edge" route).
+        // At this project's x25 world scale the existing jump (~1.1m apex, see
+        // MovementConstants.JumpSpeed/Gravity) can't reach anywhere near the 11.25m
+        // chair seat, let alone the 18.75m table top — a real vertical-traversal
+        // mechanic is needed, not just more/taller jump-steps like ArenaBuilder's
+        // BuildClimbableTower uses at native scale.
+        //
+        // Design: any collider carrying a Climbable component (Assets/Scripts/Shared/
+        // Climbable.cs — a plain marker, not a Unity tag/layer, see its own comment)
+        // within DetectionRange of the player enables climbing. While climbing,
+        // gravity is suspended and the *world-space* input already computed for normal
+        // movement (CameraRelativeXZ's output) is reprojected onto the player's own
+        // facing direction via a dot product, so pressing "forward" toward the surface
+        // being faced climbs up it and "back" climbs down — reusing the exact same
+        // input already sent every tick rather than adding a second input scheme/RPC.
+        private static readonly Collider[] ClimbOverlapBuffer = new Collider[8];
+
+        private bool IsNearClimbable()
+        {
+            var range = _climbSettings != null ? _climbSettings.DetectionRange : 1.2f;
+            var center = transform.position + Vector3.up * (_characterController.height * 0.5f);
+            var count = Physics.OverlapSphereNonAlloc(center, range, ClimbOverlapBuffer, ~0, QueryTriggerInteraction.Collide);
+            for (var i = 0; i < count; i++)
+            {
+                if (ClimbOverlapBuffer[i].GetComponentInParent<Climbable>() != null)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // worldInput is the same world-space XZ vector normal movement uses (see
+        // CameraRelativeXZ) — dotted against facing so "press toward the surface" reads
+        // as climbing up it regardless of camera angle, without a second input scheme.
+        private Vector3 ComputeClimbMove(Vector2 worldInput, float deltaTime)
+        {
+            var climbSpeed = _climbSettings != null ? _climbSettings.ClimbSpeed : 3f;
+            var shiftSpeed = _climbSettings != null ? _climbSettings.HorizontalShiftSpeed : 1.5f;
+
+            var worldInput3 = new Vector3(worldInput.x, 0f, worldInput.y);
+            var forward = transform.forward;
+            var right = transform.right;
+
+            var verticalIntent = Vector3.Dot(worldInput3, forward);
+            var lateralIntent = Vector3.Dot(worldInput3, right);
+
+            return Vector3.up * (verticalIntent * climbSpeed * deltaTime)
+                   + right * (lateralIntent * shiftSpeed * deltaTime);
         }
 
         private void ApplyColor(int slotIndex)

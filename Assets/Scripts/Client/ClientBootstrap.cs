@@ -108,7 +108,7 @@ namespace CubeArena.Client
             _config = ClientConfig.FromEnvironment();
             PlayerController.BotModeEnabled = _config.BotModeEnabled;
 
-            ArenaBuilder.Build();
+            KitchenBuilder.Build();
             BuildUi();
 
             // Subscribed unconditionally (not after connecting) so there's no race

@@ -66,7 +66,7 @@ namespace CubeArena.Server
         {
             Time.fixedDeltaTime = 1f / MovementConstants.ServerTickRate;
 
-            ArenaBuilder.Build();
+            KitchenBuilder.Build();
 
             var playerTemplate = PlayerController.CreateTemplate();
             _pickupTemplate = PickupController.CreateTemplate();
@@ -180,8 +180,17 @@ namespace CubeArena.Server
             _matchManager.MatchEnded += () => EndMatch(BuildMatchEndReason());
             _matchManager.VoteEndTriggered += () => EndMatch(BuildVoteEndReason());
 
-            SpawnPickups();
-            SpawnCrates();
+            // Gold pickups and crates are Cube Arena gameplay this run is replacing
+            // (docs/GAME_DESIGN.md section 11) - not spawned in the kitchen. Left
+            // callable (not deleted) rather than ripped out: PickupController/
+            // CrateController's underlying tech (network prefab template pattern,
+            // CrateController's NetworkTransform/NetworkRigidbody physics) is exactly
+            // what Milestone 3's loot redesign needs to adapt, per docs/DECISIONS.md's
+            // multi-carrier-loot entry. Full removal of the dead pickup-scoring
+            // gameplay itself (not just disabling its spawn) is deferred to that pass,
+            // where the replacement (bankable loot) actually exists.
+            // SpawnPickups();
+            // SpawnCrates();
         }
 
         private void OnApplicationQuit()
