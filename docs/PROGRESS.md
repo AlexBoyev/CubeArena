@@ -6,7 +6,8 @@ next, known issues. Updated after every completed step per
 
 ## Status: Milestone 1 closed, starting Milestone 2
 
-### Milestone 1 — done, merged to master
+### Milestone 1 — done, on `pocket-heist` (not merged to master yet —
+### per AUTONOMOUS_RUN.md section 2, master gets it only at Milestone 6's end)
 - KayKit Restaurant Bits (19 curated kitchen models) + Kenney Furniture Kit
   (`rugRectangle`) + Kenney Impact/Interface Sounds imported to
   `Assets/ThirdParty/`. Full list and licences in `docs/ASSETS.md`.
